@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Nuestro viaje</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🧭</text></svg>">
+  <link rel="stylesheet" href="css/styles.css">
+  <script type="module" src="js/app.js"></script>
+</head>
+<body>
+  <header class="top">
+    <div class="wrap top-inner">
+      <div>
+        <p class="eyebrow" id="destination"></p>
+        <h1 id="trip-name"></h1>
+        <p class="dates" id="trip-dates"></p>
+      </div>
+      <button id="session-btn" class="btn ghost" type="button">Entrar</button>
+    </div>
+    <div class="wrap stats" id="stats"></div>
+  </header>
+
+  <div id="banner" class="banner" hidden></div>
+
+  <nav class="wrap tabs" aria-label="Secciones">
+    <button type="button" data-view="plan">📅 Itinerario</button>
+    <button type="button" data-view="photos">📷 Fotos</button>
+  </nav>
+
+  <main class="wrap" id="main" aria-live="polite"></main>
+
+  <input type="file" id="photo-input" accept="image/*" multiple hidden>
+
+  <dialog id="lightbox" aria-label="Foto">
+    <button type="button" class="icon lightbox-close" data-close aria-label="Cerrar">✕</button>
+    <img id="lightbox-img" alt="">
+    <div class="lightbox-bar">
+      <button type="button" class="icon" id="lb-prev" aria-label="Anterior">‹</button>
+      <p id="lightbox-caption"></p>
+      <a class="btn small" id="lb-open" target="_blank" rel="noopener">Abrir</a>
+      <button type="button" class="btn small danger" id="lb-delete">Borrar</button>
+      <button type="button" class="icon" id="lb-next" aria-label="Siguiente">›</button>
+    </div>
+  </dialog>
+
+  <dialog id="activity-dialog">
+    <form id="activity-form" autocomplete="off">
+      <h2 id="activity-title">Nueva actividad</h2>
+      <label>Título
+        <input name="title" required maxlength="120" placeholder="Cena en el puerto">
+      </label>
+      <div class="row">
+        <label>Día
+          <input name="day" type="date" required>
+        </label>
+        <label>Hora
+          <input name="start_time" type="time">
+        </label>
+      </div>
+      <div class="row">
+        <label>Tipo
+          <select name="category"></select>
+        </label>
+        <label>Coste (opcional)
+          <input name="cost" type="number" min="0" step="0.01" inputmode="decimal" placeholder="0,00">
+        </label>
+      </div>
+      <label>Lugar (opcional)
+        <input name="place" maxlength="200" placeholder="Nombre o dirección">
+      </label>
+      <label>Notas (opcional)
+        <textarea name="notes" rows="3" maxlength="2000" placeholder="Reserva, enlaces, qué llevar…"></textarea>
+      </label>
+      <div class="dialog-actions">
+        <button type="button" class="btn ghost" data-close>Cancelar</button>
+        <button type="submit" class="btn primary">Guardar</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="profile-dialog">
+    <form id="profile-form">
+      <h2 id="profile-title">¿Quién eres?</h2>
+      <p class="hint" id="profile-hint">Tu nombre aparece junto a lo que añades y comentas.</p>
+      <label>Nombre
+        <input name="name" required maxlength="40" autocomplete="given-name" placeholder="Ana">
+      </label>
+      <label id="email-field" hidden>Correo
+        <input name="email" type="email" autocomplete="email" placeholder="ana@ejemplo.com">
+      </label>
+      <div class="dialog-actions">
+        <button type="button" class="btn danger" id="signout-btn" hidden>Cerrar sesión</button>
+        <button type="button" class="btn ghost" data-close>Cancelar</button>
+        <button type="submit" class="btn primary" id="profile-submit">Guardar</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" hidden></div>
+</body>
+</html>
