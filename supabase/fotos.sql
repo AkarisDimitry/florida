@@ -13,7 +13,9 @@ create table public.photos (
   created_at timestamptz not null default now()
 );
 
-revoke all on public.photos from anon;
+-- Supabase concede por defecto todos los permisos sobre las tablas nuevas: se quitan y se dan solo los necesarios
+-- (mapa.sql añade después la actualización de la ubicación).
+revoke all on public.photos from anon, authenticated;
 grant select, insert, delete on public.photos to authenticated;
 alter table public.photos enable row level security;
 

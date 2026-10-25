@@ -52,16 +52,22 @@ function localStore(onChange) {
       const photos = read(PHO).sort((a, b) => b.created_at.localeCompare(a.created_at));
       return { activities: read(ACT), comments: read(COM), photos, member: true };
     },
-    async addPhoto({ full, thumb }) {
+    async addPhoto({ full, thumb, lat = null, lng = null, taken_at = null }) {
       const photo = {
         id: crypto.randomUUID(),
         full_url: await blobToDataUrl(full),
         thumb_url: await blobToDataUrl(thumb),
+        lat,
+        lng,
+        taken_at,
         created_by: "local",
         created_by_name: getName(),
         created_at: now(),
       };
       write(PHO, [...read(PHO), photo]);
+    },
+    async updatePhoto(id, { lat, lng }) {
+      write(PHO, read(PHO).map((p) => (p.id === id ? { ...p, lat, lng } : p)));
     },
     async deletePhoto(photo) {
       write(PHO, read(PHO).filter((p) => p.id !== photo.id));
@@ -134,7 +140,7 @@ async function supabaseStore(onChange) {
       const photos = rows.map((p) => ({ ...p, full_url: urlOf(p.path), thumb_url: urlOf(p.thumb_path) }));
       return { activities, comments, photos, member: true };
     },
-    async addPhoto({ full, thumb }) {
+    async addPhoto({ full, thumb, lat = null, lng = null, taken_at = null }) {
       const id = crypto.randomUUID();
       // La carpeta es el id del usuario: las políticas de Storage solo dejan subir y borrar en la propia.
       const path = `${store.user.id}/${id}.jpg`;
@@ -142,11 +148,17 @@ async function supabaseStore(onChange) {
       const contentType = "image/jpeg";
       check(await bucket.upload(path, full, { contentType }));
       check(await bucket.upload(thumb_path, thumb, { contentType }));
-      const { error } = await sb.from("photos").insert({ id, path, thumb_path, created_by_name: getName() });
+      const row = { id, path, thumb_path, lat, lng, taken_at, created_by_name: getName() };
+      const { error } = await sb.from("photos").insert(row);
       if (error) {
         await bucket.remove([path, thumb_path]);
         throw error;
       }
+    },
+    async updatePhoto(id, { lat, lng }) {
+      const rows = check(await sb.from("photos").update({ lat, lng }).eq("id", id).select("id"));
+      // Con RLS, un UPDATE sin permiso no da error: simplemente no toca ninguna fila.
+      if (!rows.length) throw new Error("Solo quien subió la foto puede cambiar su ubicación.");
     },
     async deletePhoto(photo) {
       // Primero los archivos: si algo falla, la fila sigue ahí y se puede reintentar el borrado.

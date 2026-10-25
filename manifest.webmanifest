@@ -1,0 +1,23 @@
+{
+  "name": "Nuestro viaje",
+  "short_name": "Viaje",
+  "description": "Itinerario, mapa, rutas y fotos del viaje, compartidos entre todos los viajeros.",
+  "lang": "es",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#eef3f8",
+  "theme_color": "#0369a1",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "icons/icon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ],
+  "shortcuts": [
+    { "name": "Mapa", "url": "./#mapa" },
+    { "name": "Fotos", "url": "./#fotos" },
+    { "name": "Dónde comimos", "url": "./#comida" }
+  ]
+}

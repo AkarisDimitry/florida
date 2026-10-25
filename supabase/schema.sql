@@ -68,8 +68,10 @@ create index comments_activity_id_idx on public.comments (activity_id);
 
 -- ---------- permisos y RLS ----------
 
-revoke all on public.activities, public.comments from anon;
-grant select, insert, update, delete on public.activities, public.comments to authenticated;
+-- Supabase concede por defecto todos los permisos sobre las tablas nuevas: se quitan y se dan solo los necesarios.
+revoke all on public.activities, public.comments from anon, authenticated;
+grant select, insert, update, delete on public.activities to authenticated;
+grant select, insert, delete on public.comments to authenticated; -- los comentarios no se editan
 
 alter table public.activities enable row level security;
 alter table public.comments enable row level security;

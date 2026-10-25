@@ -1,265 +1,57 @@
-import { config } from "./config.js";
-import { createStore, getName, setName } from "./store.js";
+import { state, ctx, VIEWS, hashOf, viewOfHash, persist } from "./state.js";
+import { createStore } from "./store.js";
+import { createMap } from "./map.js";
 import { prepareImage } from "./images.js";
+import { icon } from "./icons.js";
+import { $, $$, esc, guarded, toast, hasCoords, reducedMotion, schemaHint, utc, capitalize, fmtDayShort } from "./util.js";
+import { allDays, locatedStops, stopsOfDay, currentRoutes, onRoutesChange, photosNewestFirst } from "./trip.js";
+import { renderHeader, renderPlan, renderPhotos, renderFood, renderChips, renderSheet, gate, enterButton } from "./views.js";
+import { initDialogs, openActivity, openProfile, requireName, showPhoto, refreshLightbox } from "./dialogs.js";
 
-const { trip } = config;
-const $ = (selector) => document.querySelector(selector);
+const main = $("#main");
+const mapView = $("#map-view");
+const SNAPSHOT_KEY = "viaje.copia";
 
-const CATEGORIES = {
-  comida: "🍽️",
-  visita: "🏛️",
-  transporte: "🚆",
-  alojamiento: "🏨",
-  ocio: "🎉",
-  otro: "📌",
-};
-const CATEGORY_LABELS = {
-  comida: "Comida",
-  visita: "Visita",
-  transporte: "Transporte",
-  alojamiento: "Alojamiento",
-  ocio: "Ocio",
-  otro: "Otro",
-};
+const darkQuery = matchMedia("(prefers-color-scheme: dark)");
+const theme = () => (darkQuery.matches ? "dark" : "light");
+const dayLabel = (day) => capitalize(fmtDayShort.format(utc(day)));
 
-const state = {
-  activities: [],
-  comments: [],
-  photos: [],
-  member: true,
-  view: location.hash === "#fotos" ? "photos" : "plan",
-  lightboxId: null,
-  open: new Set(), // actividades con los comentarios desplegados
-  drafts: {}, // comentario a medio escribir, por actividad
-  editingId: null,
-};
-let store;
+// ---------- datos ----------
 
-const dayFmt = new Intl.DateTimeFormat("es", { weekday: "long", day: "numeric", month: "long", timeZone: "UTC" });
-const shortFmt = new Intl.DateTimeFormat("es", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
-const uploadedFmt = new Intl.DateTimeFormat("es", { day: "numeric", month: "short", year: "numeric" });
-const money = new Intl.NumberFormat("es", { style: "currency", currency: trip.currency || "EUR" });
-
-const esc = (value) =>
-  String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
-const utc = (iso) => new Date(`${iso}T00:00:00Z`);
-const capitalize = (s) => s.charAt(0).toUpperCase() + s.slice(1);
-const todayIso = () => {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-};
-
-function toast(message, ms = 5000) {
-  const el = $("#toast");
-  el.textContent = message;
-  el.hidden = false;
-  clearTimeout(toast.timer);
-  toast.timer = setTimeout(() => (el.hidden = true), ms);
-}
-
-function guarded(fn) {
-  return async (...args) => {
-    try {
-      await fn(...args);
-    } catch (err) {
-      console.error(err);
-      toast(err.message || "Algo ha fallado");
-    }
-  };
-}
-
-// ---------- vista ----------
-
-function countdown() {
-  if (!trip.start) return "—";
-  const diff = Math.round((utc(trip.start) - utc(todayIso())) / 864e5);
-  if (diff > 1) return `Faltan ${diff} días`;
-  if (diff === 1) return "Falta 1 día";
-  if (!trip.end || todayIso() <= trip.end) return "¡De viaje!";
-  return "Viaje terminado";
-}
-
-function allDays() {
-  const days = new Set(state.activities.map((a) => a.day));
-  if (trip.start && trip.end) {
-    for (let t = utc(trip.start).getTime(); t <= utc(trip.end).getTime(); t += 864e5) {
-      days.add(new Date(t).toISOString().slice(0, 10));
-    }
+function readSnapshot() {
+  try {
+    return JSON.parse(localStorage.getItem(SNAPSHOT_KEY));
+  } catch {
+    return null;
   }
-  return [...days].sort();
 }
 
-function byTime(a, b) {
-  return (a.start_time || "99:99").localeCompare(b.start_time || "99:99") || a.created_at.localeCompare(b.created_at);
+// Última copia buena de los datos, para poder consultar el itinerario sin cobertura (los enlaces de las
+// fotos caducan, así que no se guardan).
+function saveSnapshot() {
+  const photos = state.photos.map(({ full_url, thumb_url, ...meta }) => meta);
+  persist(SNAPSHOT_KEY, { activities: state.activities, comments: state.comments, photos, member: true });
 }
 
-function renderHeader() {
-  document.title = trip.name;
-  $("#trip-name").textContent = trip.name;
-  $("#destination").textContent = trip.destination;
-  $("#trip-dates").textContent =
-    trip.start && trip.end ? `${shortFmt.format(utc(trip.start))} – ${shortFmt.format(utc(trip.end))}` : "Fechas por definir";
-  $("#session-btn").textContent = getName() || store.user?.email || "Entrar";
-  for (const tab of document.querySelectorAll(".tabs [data-view]")) {
-    if (tab.dataset.view === state.view) tab.setAttribute("aria-current", "page");
-    else tab.removeAttribute("aria-current");
-  }
-
-  const total = state.activities.reduce((sum, a) => sum + (a.cost || 0), 0);
-  $("#stats").innerHTML = [
-    ["Cuenta atrás", countdown()],
-    ["Actividades", state.activities.length],
-    ["Gasto anotado", money.format(total)],
-  ]
-    .map(([label, value]) => `<div class="stat"><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`)
-    .join("");
-
-  const banner = $("#banner");
-  banner.hidden = store.mode !== "demo";
-  banner.textContent =
-    "Modo demo: lo que añadas se guarda solo en este navegador. Conecta Supabase en js/config.js para compartirlo (ver docs/DESPLIEGUE.md).";
-}
-
-function groupBy(items, key) {
-  const groups = new Map();
-  for (const item of items) {
-    const k = key(item);
-    if (!groups.has(k)) groups.set(k, []);
-    groups.get(k).push(item);
-  }
-  return groups;
-}
-
-// `text` y `buttonHtml` son HTML ya escapado.
-function gate(title, text, buttonHtml = "") {
-  return `<div class="gate"><h2>${esc(title)}</h2><p>${text}</p>${buttonHtml}</div>`;
-}
-
-const enterButton = `<button class="btn primary" data-action="profile">Entrar</button>`;
-
-function card(a, comments) {
-  const mapsUrl = a.place ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(a.place)}` : "";
-  const meta = [
-    a.place ? `<a href="${esc(mapsUrl)}" target="_blank" rel="noopener">📍 ${esc(a.place)}</a>` : "",
-    a.cost != null ? esc(money.format(a.cost)) : "",
-    a.created_by_name ? `por ${esc(a.created_by_name)}` : "",
-  ].filter(Boolean);
-
-  const commentItems = comments
-    .map(
-      (c) => `<li>
-        <span class="who">${esc(c.created_by_name || "Alguien")}</span> ${esc(c.body)}
-        ${c.created_by === store.user?.id ? `<button class="icon" title="Borrar comentario" data-action="del-comment" data-id="${esc(c.id)}">✕</button>` : ""}
-      </li>`,
-    )
-    .join("");
-
-  return `<article class="card">
-    <div class="card-main">
-      <div class="time">${esc(a.start_time ? a.start_time.slice(0, 5) : "—")}</div>
-      <div class="body">
-        <h3>${CATEGORIES[a.category] || CATEGORIES.otro} ${esc(a.title)}</h3>
-        ${meta.length ? `<p class="meta">${meta.join(" · ")}</p>` : ""}
-        ${a.notes ? `<p class="notes">${esc(a.notes)}</p>` : ""}
-      </div>
-      <div class="actions">
-        <button class="icon" title="Editar" data-action="edit" data-id="${esc(a.id)}">✏️</button>
-        <button class="icon" title="Borrar" data-action="delete" data-id="${esc(a.id)}">🗑️</button>
-      </div>
-    </div>
-    <details data-id="${esc(a.id)}" ${state.open.has(a.id) ? "open" : ""}>
-      <summary>💬 Comentarios (${comments.length})</summary>
-      ${commentItems ? `<ul class="comments">${commentItems}</ul>` : ""}
-      <form class="comment-form" data-activity="${esc(a.id)}">
-        <input name="body" maxlength="1000" required placeholder="Escribe un comentario…" value="${esc(state.drafts[a.id] || "")}">
-        <button class="btn small primary" type="submit">Enviar</button>
-      </form>
-    </details>
-  </article>`;
-}
-
-function renderPhotos() {
-  const grid = state.photos.length
-    ? `<div class="photo-grid">${state.photos
-        .map(
-          (p) => `<button class="photo" data-action="open-photo" data-id="${esc(p.id)}">
-            <img src="${esc(p.thumb_url)}" loading="lazy" alt="Foto de ${esc(p.created_by_name || "un viajero")}">
-          </button>`,
-        )
-        .join("")}</div>`
-    : `<p class="empty">Aún no hay fotos. ¡Sube la primera!</p>`;
-  return `<section>
-    <div class="day-head">
-      <h2>Fotos (${state.photos.length})</h2>
-      <button class="btn small primary" data-action="upload">📷 Subir fotos</button>
-    </div>
-    ${grid}
-  </section>`;
-}
-
-function renderMain() {
-  if (store.mode === "supabase" && !store.user) {
-    return gate("Web privada", "Entra con tu correo para ver el viaje. Te enviaremos un enlace de acceso.", enterButton);
-  }
-  if (!state.member) {
-    return gate(
-      "Aún no tienes acceso",
-      `Has entrado como <strong>${esc(store.user.email)}</strong>, pero ese correo no figura en la lista de viajeros. Pide a quien organiza el viaje que lo añada.`,
-    );
-  }
-
-  if (state.view === "photos") return renderPhotos();
-
-  const days = allDays();
-  if (!days.length) {
-    return gate(
-      "Todavía no hay nada",
-      "Añade la primera actividad del viaje.",
-      `<button class="btn primary" data-action="add" data-day="${todayIso()}">+ Añadir actividad</button>`,
-    );
-  }
-
-  const commentsByActivity = groupBy(state.comments, (c) => c.activity_id);
-  const activitiesByDay = groupBy([...state.activities].sort(byTime), (a) => a.day);
-
-  return days
-    .map((day) => {
-      const items = activitiesByDay.get(day) ?? [];
-      return `<section class="day">
-        <div class="day-head">
-          <h2>${esc(capitalize(dayFmt.format(utc(day))))}</h2>
-          <button class="btn small" data-action="add" data-day="${esc(day)}">+ Añadir</button>
-        </div>
-        ${items.length ? items.map((a) => card(a, commentsByActivity.get(a.id) ?? [])).join("") : `<p class="empty">Sin planes todavía.</p>`}
-      </section>`;
-    })
-    .join("");
-}
-
-function render() {
-  const main = $("#main");
-  // Un refresco remoto no debe quitarle el foco a quien está escribiendo un comentario.
-  const typing = document.activeElement?.closest?.(".comment-form");
-  const typingId = typing?.dataset.activity;
-
-  renderHeader();
-  main.innerHTML = renderMain();
-
-  if (typingId) {
-    const input = main.querySelector(`.comment-form[data-activity="${CSS.escape(typingId)}"] input`);
-    input?.focus();
-    input?.setSelectionRange(input.value.length, input.value.length);
-  }
-  if (lightbox.open) showPhoto(state.lightboxId);
-}
+const isNetworkError = (err) => err instanceof TypeError || /fetch|network|failed to/i.test(err?.message || "");
 
 async function refresh() {
+  const supabase = ctx.store.mode === "supabase";
   try {
-    if (store.mode === "supabase" && !store.user) Object.assign(state, { activities: [], comments: [], photos: [], member: true });
-    else Object.assign(state, await store.load());
+    if (supabase && !ctx.store.user) {
+      Object.assign(state, { activities: [], comments: [], photos: [], member: true, offline: false });
+      localStorage.removeItem(SNAPSHOT_KEY);
+    } else {
+      Object.assign(state, await ctx.store.load(), { offline: false });
+      if (supabase && state.member) saveSnapshot();
+    }
   } catch (err) {
-    console.error(err);
-    toast(err.message || "No se pudieron cargar los datos");
+    const snapshot = supabase ? readSnapshot() : null;
+    if (snapshot && isNetworkError(err)) Object.assign(state, snapshot, { offline: true });
+    else {
+      console.error(err);
+      toast(err.message || "No se pudieron cargar los datos");
+    }
   }
   render();
 }
@@ -270,134 +62,275 @@ const scheduleRefresh = () => {
   refreshTimer = setTimeout(refresh, 150);
 };
 
-// ---------- diálogos ----------
+// ---------- vistas ----------
 
-const activityDialog = $("#activity-dialog");
-const activityForm = $("#activity-form");
-const profileDialog = $("#profile-dialog");
-const profileForm = $("#profile-form");
-
-$("#activity-form [name=category]").innerHTML = Object.entries(CATEGORY_LABELS)
-  .map(([value, label]) => `<option value="${value}">${CATEGORIES[value]} ${label}</option>`)
-  .join("");
-
-for (const button of document.querySelectorAll("[data-close]")) {
-  button.addEventListener("click", () => button.closest("dialog").close());
+function gateHtml() {
+  if (ctx.store.mode === "supabase" && !ctx.store.user) {
+    return gate("Web privada", "Entra con tu correo para ver el viaje. Te enviaremos un enlace de acceso.", enterButton);
+  }
+  if (!state.member) {
+    return gate(
+      "Aún no tienes acceso",
+      `Has entrado como <strong>${esc(ctx.store.user.email)}</strong>, pero ese correo no figura en la lista de viajeros. Pide a quien organiza el viaje que lo añada.`,
+    );
+  }
+  return "";
 }
 
-function openProfile() {
-  const needsEmail = store.mode === "supabase" && !store.user;
-  const signedIn = store.mode === "supabase" && store.user;
-  profileForm.elements.name.value = getName();
-  profileForm.email.required = needsEmail;
-  $("#email-field").hidden = !needsEmail;
-  $("#signout-btn").hidden = !signedIn;
-  $("#profile-title").textContent = needsEmail ? "Entrar" : "Tu perfil";
-  $("#profile-hint").textContent = needsEmail
-    ? "Te enviaremos un enlace al correo; ábrelo en este mismo dispositivo."
-    : "Tu nombre aparece junto a lo que añades y comentas.";
-  $("#profile-submit").textContent = needsEmail ? "Enviar enlace" : "Guardar";
-  profileDialog.showModal();
-}
+let renderedView = null;
+let mapWasVisible = false;
+let mapFitted = false;
 
-function requireName() {
-  if (getName()) return true;
-  toast("Primero dinos tu nombre.");
-  openProfile();
-  return false;
-}
+function render() {
+  renderHeader();
+  const gated = gateHtml();
+  const view = gated ? "gate" : state.view;
+  document.body.dataset.view = view;
+  const tabbar = $("#tabbar");
+  tabbar.style.setProperty("--tab-i", Math.max(0, VIEWS.indexOf(state.view)));
+  for (const tab of $$(".tab", tabbar)) {
+    if (tab.dataset.view === state.view) tab.setAttribute("aria-current", "page");
+    else tab.removeAttribute("aria-current");
+  }
 
-function openActivity({ id, day } = {}) {
-  if (!requireName()) return;
-  const a = state.activities.find((x) => x.id === id);
-  state.editingId = a?.id ?? null;
-  $("#activity-title").textContent = a ? "Editar actividad" : "Nueva actividad";
-  activityForm.reset();
-  activityForm.day.value = a?.day ?? day ?? todayIso();
-  activityForm.start_time.value = a?.start_time?.slice(0, 5) ?? "";
-  activityForm.elements.title.value = a?.title ?? "";
-  activityForm.category.value = a?.category ?? "otro";
-  activityForm.cost.value = a?.cost ?? "";
-  activityForm.place.value = a?.place ?? "";
-  activityForm.notes.value = a?.notes ?? "";
-  activityDialog.showModal();
-}
+  const showMap = view === "map";
+  mapView.hidden = !showMap;
+  main.hidden = showMap;
+  if (!showMap && mapWasVisible) {
+    ctx.map.stopPlayback();
+    ctx.map.cancelPick();
+  }
 
-activityForm.addEventListener(
-  "submit",
-  guarded(async (event) => {
-    event.preventDefault();
-    const f = new FormData(activityForm);
-    const activity = {
-      day: f.get("day"),
-      start_time: f.get("start_time") || null,
-      title: f.get("title").trim(),
-      category: f.get("category"),
-      place: f.get("place").trim() || null,
-      cost: f.get("cost") === "" ? null : Number(f.get("cost")),
-      notes: f.get("notes").trim() || null,
-    };
-    if (state.editingId) activity.id = state.editingId;
-    await store.saveActivity(activity);
-    activityDialog.close();
-    await refresh();
-  }),
-);
-
-profileForm.addEventListener(
-  "submit",
-  guarded(async (event) => {
-    event.preventDefault();
-    const f = new FormData(profileForm);
-    setName(f.get("name").trim());
-    if (store.mode === "supabase" && !store.user) {
-      await store.signIn(f.get("email").trim());
-      toast("Listo: revisa tu correo y abre el enlace de acceso.");
+  if (showMap) {
+    renderMapView(!mapWasVisible);
+  } else {
+    // Un refresco remoto no debe quitarle el foco a quien está escribiendo un comentario.
+    const typingId = document.activeElement?.closest?.(".comment-form")?.dataset.activity;
+    main.innerHTML = gated || { plan: renderPlan, photos: renderPhotos, food: renderFood }[view]();
+    if (typingId) {
+      const input = main.querySelector(`.comment-form[data-activity="${CSS.escape(typingId)}"] input`);
+      input?.focus();
+      input?.setSelectionRange(input.value.length, input.value.length);
     }
-    profileDialog.close();
-    render();
-  }),
-);
+    main.classList.remove("enter");
+    if (renderedView !== view) {
+      void main.offsetWidth; // reinicia las animaciones de entrada solo al cambiar de vista
+      main.classList.add("enter");
+    }
+  }
+  mapWasVisible = showMap;
+  renderedView = view;
+  refreshLightbox();
+}
 
-$("#signout-btn").addEventListener(
-  "click",
-  guarded(async () => {
-    await store.signOut();
-    profileDialog.close();
-  }),
-);
+// ---------- mapa ----------
 
-$("#session-btn").addEventListener("click", openProfile);
+function mapPhotos() {
+  return photosNewestFirst().filter(hasCoords);
+}
 
-// ---------- eventos de la lista ----------
+function pushMapData() {
+  ctx.map.update({
+    stops: locatedStops(),
+    photos: mapPhotos(),
+    routes: currentRoutes(),
+    layers: state.layers,
+    activeDay: state.day,
+    selected: state.selectedStop,
+    selectedPhoto: state.selectedPhoto,
+  });
+}
 
-const main = $("#main");
+function allCoords() {
+  return [...currentRoutes().flatMap((r) => r.coords), ...locatedStops().map((s) => [s.lng, s.lat]), ...(state.layers.photos ? mapPhotos().map((p) => [p.lng, p.lat]) : [])];
+}
 
-main.addEventListener(
-  "click",
-  guarded(async (event) => {
-    const button = event.target.closest("[data-action]");
-    if (!button) return;
-    const { action, id, day } = button.dataset;
+function renderMapView(becameVisible) {
+  const map = ctx.map;
+  if (!map.ready() && !map.init(theme())) {
+    $("#map-chips").innerHTML = "";
+    $("#map-sheet").innerHTML = `<div class="sheet-empty"><div><strong>No se puede mostrar el mapa</strong><p>${esc(map.error()?.message ?? "")}</p></div></div>`;
+    return;
+  }
+  if (becameVisible) map.resize();
+  pushMapData();
 
-    if (action === "profile") openProfile();
-    else if (action === "upload") {
-      if (requireName()) $("#photo-input").click();
-    } else if (action === "open-photo") showPhoto(id);
-    else if (action === "add") openActivity({ day });
-    else if (action === "edit") openActivity({ id });
-    else if (action === "delete") {
-      const a = state.activities.find((x) => x.id === id);
-      if (confirm(`¿Borrar «${a?.title}»? También se borrarán sus comentarios.`)) {
-        await store.deleteActivity(id);
-        await refresh();
-      }
-    } else if (action === "del-comment") {
-      await store.deleteComment(id);
+  $("#map-chips").innerHTML = renderChips();
+  const sheet = $("#map-sheet");
+  const scroll = sheet.querySelector(".sheet-track")?.scrollLeft ?? 0;
+  sheet.innerHTML = renderSheet();
+  const track = sheet.querySelector(".sheet-track");
+  if (track) track.scrollLeft = scroll;
+  syncMapControls();
+
+  if (!mapFitted) {
+    const coords = allCoords();
+    if (coords.length) {
+      mapFitted = true;
+      map.fit(coords, { maxZoom: 13, duration: 0 });
+    }
+  }
+}
+
+function syncMapControls() {
+  for (const input of $$("[data-layer]")) input.checked = state.layers[input.dataset.layer];
+  for (const button of $$("[data-road]")) button.setAttribute("aria-pressed", String(button.dataset.road === String(state.roadMode)));
+  const playing = ctx.map.isPlaying();
+  $("#fab-play").innerHTML = icon(playing ? "pause" : "play", 22);
+  $("#fab-play").classList.toggle("is-on", playing);
+  $("#fab-play").setAttribute("aria-label", playing ? "Detener la reproducción" : "Reproducir el viaje");
+  $("#fab-locate").classList.toggle("is-on", ctx.map.isLocating());
+}
+
+function showMapBanner(html, { cancellable = false } = {}) {
+  const banner = $("#map-banner");
+  banner.innerHTML = `<span>${html}</span>${cancellable ? `<button type="button" class="link-btn" data-action="cancel-pick">Cancelar</button>` : ""}`;
+  banner.hidden = false;
+}
+const hideMapBanner = () => ($("#map-banner").hidden = true);
+
+function fitAll() {
+  const coords = allCoords();
+  if (coords.length) ctx.map.fit(coords, { maxZoom: 13 });
+}
+
+function selectDay(day) {
+  ctx.map.stopPlayback();
+  state.day = day || null;
+  state.selectedStop = null;
+  render();
+  if (!state.day) return fitAll();
+  const route = currentRoutes().find((r) => r.day === state.day);
+  const stops = stopsOfDay(state.day);
+  ctx.map.fit(route ? route.coords : stops.map((s) => [s.lng, s.lat]));
+  if (route) ctx.map.drawIn(route.coords, route.color, route.day);
+}
+
+function selectStop(id) {
+  const stop = locatedStops().find((s) => s.id === id);
+  if (!stop) return;
+  state.selectedStop = id;
+  render();
+  ctx.map.flyTo(stop.lat, stop.lng, 15);
+  $(`.stop-card[data-stop="${CSS.escape(id)}"]`)?.scrollIntoView({ inline: "center", block: "nearest", behavior: reducedMotion() ? "auto" : "smooth" });
+}
+
+async function togglePlay() {
+  if (ctx.map.isPlaying()) return ctx.map.stopPlayback();
+  const routes = currentRoutes().filter((r) => !state.day || r.day === state.day);
+  if (!routes.length) return toast("Para reproducir el viaje hacen falta al menos dos lugares con ubicación en el mismo día.");
+  $("#layers-panel").hidden = true;
+  const stopsById = new Map(locatedStops().map((s) => [s.id, s]));
+  const started = ctx.map.play(
+    routes.map((r) => ({ day: r.day, color: r.color, coords: r.coords, stops: stopsOfDay(r.day) })),
+    {
+      onSegment: (segment) => showMapBanner(`${icon("route", 16)} ${esc(dayLabel(segment.day))}`),
+      onStop: (id) => showMapBanner(`${icon("pin", 16)} ${esc(stopsById.get(id)?.title ?? "")}`),
+      onEnd: () => {
+        hideMapBanner();
+        syncMapControls();
+      },
+    },
+  );
+  syncMapControls();
+  await started;
+}
+
+function setView(view) {
+  if (view === state.view) return;
+  state.view = view;
+  history.replaceState(null, "", `${location.pathname}${location.search}${hashOf(view)}`);
+  window.scrollTo(0, 0);
+  render();
+}
+
+// Lleva a la persona al mapa para que toque un punto; vuelve a la vista de origen al terminar.
+async function pickOnMap(text) {
+  const previous = state.view;
+  setView("map");
+  if (!ctx.map.ready()) {
+    toast("El mapa no está disponible.");
+    setView(previous);
+    return null;
+  }
+  showMapBanner(`${icon("pin", 16)} ${esc(text)}`, { cancellable: true });
+  const spot = await ctx.map.pick();
+  hideMapBanner();
+  setView(previous);
+  return spot;
+}
+
+function focusStopOnMap(id) {
+  state.selectedStop = id;
+  state.day = null;
+  setView("map");
+  render();
+  selectStop(id);
+}
+
+function focusPhotoOnMap(id) {
+  const photo = state.photos.find((p) => p.id === id);
+  if (!hasCoords(photo)) return;
+  state.selectedPhoto = id;
+  setView("map");
+  render();
+  ctx.map.flyTo(photo.lat, photo.lng, 16.5);
+  setTimeout(() => {
+    if (state.selectedPhoto === id) {
+      state.selectedPhoto = null;
+      if (state.view === "map") pushMapData();
+    }
+  }, 7000);
+}
+
+// ---------- eventos ----------
+
+const actions = {
+  profile: () => openProfile(),
+  upload: () => requireName() && $("#photo-input").click(),
+  "open-photo": ({ id }) => showPhoto(id),
+  add: ({ day, category }) => openActivity({ day: day || undefined, category }),
+  edit: ({ id }) => openActivity({ id }),
+  delete: async ({ id }) => {
+    const a = state.activities.find((x) => x.id === id);
+    if (confirm(`¿Borrar «${a?.title}»? También se borrarán sus comentarios.`)) {
+      await ctx.store.deleteActivity(id);
       await refresh();
     }
-  }),
-);
+  },
+  "del-comment": async ({ id }) => {
+    await ctx.store.deleteComment(id);
+    await refresh();
+  },
+  "show-on-map": ({ id }) => focusStopOnMap(id),
+  "day-on-map": ({ day }) => {
+    setView("map");
+    selectDay(day);
+  },
+  "photos-on-map": () => {
+    setView("map");
+    const coords = mapPhotos().map((p) => [p.lng, p.lat]);
+    if (coords.length) ctx.map.fit(coords, { maxZoom: 14 });
+  },
+  "select-day": ({ day }) => selectDay(day),
+  "select-stop": ({ id }) => selectStop(id),
+  "cancel-pick": () => ctx.map.cancelPick(),
+};
+
+const onAction = guarded(async (event) => {
+  if (event.target.closest("a[href]")) return; // los enlaces (cómo llegar, abrir) siguen su curso
+  const element = event.target.closest("[data-action]");
+  if (!element) return;
+  await actions[element.dataset.action]?.({ ...element.dataset });
+});
+main.addEventListener("click", onAction);
+$(".map-ui").addEventListener("click", onAction);
+$(".map-ui").addEventListener("keydown", (event) => {
+  if ((event.key === "Enter" || event.key === " ") && event.target.matches(".stop-card")) {
+    event.preventDefault();
+    event.target.click();
+  }
+});
 
 main.addEventListener(
   "submit",
@@ -409,18 +342,16 @@ main.addEventListener(
     const id = form.dataset.activity;
     const body = form.body.value.trim();
     if (!body) return;
-    await store.addComment(id, body);
+    await ctx.store.addComment(id, body);
     delete state.drafts[id];
     state.open.add(id);
     await refresh();
   }),
 );
-
 main.addEventListener("input", (event) => {
   const form = event.target.closest(".comment-form");
   if (form) state.drafts[form.dataset.activity] = event.target.value;
 });
-
 // "toggle" no burbujea, por eso se escucha en la fase de captura.
 main.addEventListener(
   "toggle",
@@ -433,16 +364,60 @@ main.addEventListener(
   true,
 );
 
-// ---------- fotos y pestañas ----------
-
-for (const tab of document.querySelectorAll(".tabs [data-view]")) {
-  tab.addEventListener("click", () => {
-    state.view = tab.dataset.view;
-    history.replaceState(null, "", state.view === "photos" ? "#fotos" : location.pathname + location.search);
-    render();
-  });
+// pestañas
+const TABS = { map: ["map", "Mapa"], plan: ["calendar", "Itinerario"], photos: ["camera", "Fotos"], food: ["food", "Comida"] };
+for (const tab of $$(".tab")) {
+  const [ico, label] = TABS[tab.dataset.view];
+  tab.innerHTML = `${icon(ico, 22)}<span>${label}</span>`;
+  tab.addEventListener("click", () => setView(tab.dataset.view));
 }
+$("#data-btn").innerHTML = icon("more", 22);
+$("#fab-fit").innerHTML = icon("fit", 22);
+$("#fab-locate").innerHTML = icon("locate", 22);
+$("#fab-layers").innerHTML = icon("layers", 22);
 
+// controles del mapa
+$("#fab-play").addEventListener("click", guarded(togglePlay));
+$("#fab-fit").addEventListener("click", () => selectDay(null));
+$("#fab-locate").addEventListener("click", () => {
+  if (ctx.map.isLocating()) {
+    ctx.map.stopLocate();
+    toast("Ubicación desactivada", 2500);
+  } else {
+    ctx.map.locate({
+      onError: (err) => {
+        toast(err.message);
+        syncMapControls();
+      },
+    });
+  }
+  syncMapControls();
+});
+$("#fab-layers").addEventListener("click", () => {
+  const panel = $("#layers-panel");
+  panel.hidden = !panel.hidden;
+  $("#fab-layers").setAttribute("aria-expanded", String(!panel.hidden));
+  $("#fab-layers").classList.toggle("is-on", !panel.hidden);
+});
+$("#layers-panel").addEventListener("change", (event) => {
+  const layer = event.target.dataset.layer;
+  if (!layer) return;
+  state.layers[layer] = event.target.checked;
+  persist("viaje.capas", state.layers);
+  pushMapData();
+});
+$("#layers-panel").addEventListener("click", (event) => {
+  const road = event.target.closest("[data-road]")?.dataset.road;
+  if (road == null) return;
+  state.roadMode = road === "true";
+  persist("viaje.rutaCarretera", state.roadMode);
+  render();
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !$("#layers-panel").hidden) $("#fab-layers").click();
+});
+
+// subida de fotos
 $("#photo-input").addEventListener(
   "change",
   guarded(async (event) => {
@@ -450,10 +425,19 @@ $("#photo-input").addEventListener(
     const files = [...input.files];
     input.value = "";
     const failed = [];
+    let uploaded = 0;
+    let located = 0;
     for (const [i, file] of files.entries()) {
       toast(`Subiendo foto ${i + 1} de ${files.length}…`, 60000);
       try {
-        await store.addPhoto(await prepareImage(file));
+        const prepared = await prepareImage(file);
+        try {
+          await ctx.store.addPhoto(prepared);
+        } catch (err) {
+          throw schemaHint(err);
+        }
+        uploaded++;
+        if (hasCoords(prepared)) located++;
         await refresh();
       } catch (err) {
         console.error(err);
@@ -461,71 +445,48 @@ $("#photo-input").addEventListener(
       }
     }
     if (failed.length) toast(`${failed.length} de ${files.length} sin subir: ${failed[0]}`, 8000);
-    else toast(files.length === 1 ? "Foto subida" : `${files.length} fotos subidas`);
+    else if (located === uploaded) toast(uploaded === 1 ? "Foto subida, con su ubicación" : `${uploaded} fotos subidas, todas con ubicación`);
+    else if (located === 0)
+      toast("Subidas, pero ninguna trae ubicación. En iPhone, al elegirlas toca «Opciones» y activa «Ubicación». También puedes colocarlas a mano: abre la foto y elige el punto en el mapa.", 11000);
+    else toast(`${uploaded} fotos subidas, ${located} con ubicación. Las demás se pueden colocar a mano desde el visor.`, 8000);
   }),
 );
-
-const lightbox = $("#lightbox");
-
-function showPhoto(id) {
-  const i = state.photos.findIndex((p) => p.id === id);
-  if (i < 0) {
-    if (lightbox.open) lightbox.close();
-    return;
-  }
-  const photo = state.photos[i];
-  state.lightboxId = id;
-  const img = $("#lightbox-img");
-  if (img.getAttribute("src") !== photo.full_url) img.src = photo.full_url;
-  img.alt = `Foto de ${photo.created_by_name || "un viajero"}`;
-  $("#lightbox-caption").textContent = `${photo.created_by_name || "Alguien"} · ${uploadedFmt.format(new Date(photo.created_at))}`;
-  $("#lb-open").href = photo.full_url;
-  $("#lb-delete").hidden = photo.created_by !== store.user?.id;
-  // Las fotos van de la más nueva a la más antigua: "anterior" es la de la izquierda en la cuadrícula.
-  $("#lb-prev").disabled = i === 0;
-  $("#lb-next").disabled = i === state.photos.length - 1;
-  if (!lightbox.open) lightbox.showModal();
-}
-
-function stepPhoto(delta) {
-  const i = state.photos.findIndex((p) => p.id === state.lightboxId);
-  const next = state.photos[i + delta];
-  if (next) showPhoto(next.id);
-}
-
-$("#lb-prev").addEventListener("click", () => stepPhoto(-1));
-$("#lb-next").addEventListener("click", () => stepPhoto(1));
-lightbox.addEventListener("keydown", (event) => {
-  if (event.key === "ArrowLeft") stepPhoto(-1);
-  else if (event.key === "ArrowRight") stepPhoto(1);
-});
-lightbox.addEventListener("click", (event) => {
-  if (event.target === lightbox) lightbox.close();
-});
-$("#lb-delete").addEventListener(
-  "click",
-  guarded(async () => {
-    const photo = state.photos.find((p) => p.id === state.lightboxId);
-    if (!photo || !confirm("¿Borrar esta foto? No se puede deshacer.")) return;
-    await store.deletePhoto(photo);
-    lightbox.close();
-    await refresh();
-  }),
-);
-
-// Al volver a la pestaña del navegador se recargan los datos (por si se perdió algún aviso en tiempo real
-// y para renovar los enlaces temporales de las fotos).
-document.addEventListener("visibilitychange", () => {
-  if (!document.hidden && store) scheduleRefresh();
-});
 
 // ---------- arranque ----------
 
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && ctx.store) scheduleRefresh();
+});
+// Enlaces como «…/#fotos» (accesos directos de la app instalada, marcadores) cambian de vista.
+window.addEventListener("hashchange", () => {
+  const view = viewOfHash(location.hash);
+  if (view && ctx.store) setView(view);
+});
+darkQuery.addEventListener("change", () => ctx.map?.setTheme(theme()));
+initDialogs();
+
 try {
-  store = await createStore(scheduleRefresh);
+  ctx.actions = { refresh, render, pickOnMap, focusPhotoOnMap };
+  ctx.store = await createStore(scheduleRefresh);
+  ctx.map = createMap({
+    container: $("#map"),
+    onStop: selectStop,
+    onPhoto: showPhoto,
+    onLongPress: ({ lat, lng }) => {
+      navigator.vibrate?.(15);
+      openActivity({ day: state.day || undefined, lat, lng });
+    },
+  });
+  onRoutesChange(render);
   await refresh();
 } catch (err) {
   console.error(err);
   $("#session-btn").hidden = true;
-  $("#main").innerHTML = gate("No se pudo arrancar", esc(err.message || String(err)));
+  main.hidden = false;
+  main.innerHTML = gate("No se pudo arrancar", esc(err.message || String(err)));
+}
+
+// Instalación y uso sin conexión: solo en HTTPS (en local se evita para no cachear versiones viejas).
+if ("serviceWorker" in navigator && location.protocol === "https:") {
+  navigator.serviceWorker.register("sw.js").catch((err) => console.warn("Sin service worker:", err.message));
 }

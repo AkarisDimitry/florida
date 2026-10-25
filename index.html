@@ -2,51 +2,79 @@
 <html lang="es">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Nuestro viaje</title>
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🧭</text></svg>">
+  <meta name="description" content="Itinerario, mapa, rutas y fotos del viaje, compartidos entre todos los viajeros.">
+  <meta name="theme-color" content="#eef3f8" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0b1220" media="(prefers-color-scheme: dark)">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Viaje">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/dist/maplibre-gl.css">
   <link rel="stylesheet" href="css/styles.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
   <script type="module" src="js/app.js"></script>
 </head>
-<body>
-  <header class="top">
-    <div class="wrap top-inner">
-      <div>
-        <p class="eyebrow" id="destination"></p>
-        <h1 id="trip-name"></h1>
-        <p class="dates" id="trip-dates"></p>
-      </div>
-      <button id="session-btn" class="btn ghost" type="button">Entrar</button>
+<body data-view="map">
+  <header class="appbar">
+    <div class="appbar-title">
+      <h1 id="trip-name"></h1>
+      <p class="appbar-sub" id="trip-sub"></p>
     </div>
-    <div class="wrap stats" id="stats"></div>
+    <div class="appbar-actions">
+      <button type="button" id="data-btn" class="icon-btn" aria-label="Datos y móvil" title="Datos y móvil"></button>
+      <button type="button" id="session-btn" class="avatar" aria-label="Perfil">?</button>
+    </div>
   </header>
 
   <div id="banner" class="banner" hidden></div>
 
-  <nav class="wrap tabs" aria-label="Secciones">
-    <button type="button" data-view="plan">📅 Itinerario</button>
-    <button type="button" data-view="photos">📷 Fotos</button>
-  </nav>
+  <main class="page" id="main" aria-live="polite"></main>
 
-  <main class="wrap" id="main" aria-live="polite"></main>
+  <section id="map-view" class="map-view" hidden aria-label="Mapa del viaje">
+    <div id="map" class="map"></div>
+    <div class="map-ui">
+      <div id="map-chips" class="map-chips" role="tablist" aria-label="Días del viaje"></div>
+      <div class="map-fabs">
+        <button type="button" id="fab-play" class="fab fab-accent" aria-label="Reproducir el viaje" title="Reproducir el viaje"></button>
+        <button type="button" id="fab-fit" class="fab" aria-label="Ver todo el viaje" title="Ver todo el viaje"></button>
+        <button type="button" id="fab-locate" class="fab" aria-label="Mi ubicación" title="Mi ubicación"></button>
+        <button type="button" id="fab-layers" class="fab" aria-label="Capas del mapa" title="Capas del mapa" aria-expanded="false"></button>
+      </div>
+      <div id="layers-panel" class="layers-panel" hidden>
+        <p class="panel-title">Qué mostrar</p>
+        <label class="switch"><input type="checkbox" data-layer="stops"><span>Lugares</span></label>
+        <label class="switch"><input type="checkbox" data-layer="routes"><span>Rutas</span></label>
+        <label class="switch"><input type="checkbox" data-layer="photos"><span>Fotos</span></label>
+        <p class="panel-title">Tipo de ruta</p>
+        <div class="segmented" role="group" aria-label="Tipo de ruta">
+          <button type="button" data-road="true">Carretera</button>
+          <button type="button" data-road="false">Línea recta</button>
+        </div>
+      </div>
+      <div id="map-banner" class="map-banner" hidden></div>
+      <div id="map-sheet" class="sheet"></div>
+    </div>
+  </section>
+
+  <nav class="tabbar" id="tabbar" aria-label="Secciones">
+    <button type="button" class="tab" data-view="map"></button>
+    <button type="button" class="tab" data-view="plan"></button>
+    <button type="button" class="tab" data-view="photos"></button>
+    <button type="button" class="tab" data-view="food"></button>
+  </nav>
 
   <input type="file" id="photo-input" accept="image/*" multiple hidden>
 
-  <dialog id="lightbox" aria-label="Foto">
-    <button type="button" class="icon lightbox-close" data-close aria-label="Cerrar">✕</button>
-    <img id="lightbox-img" alt="">
-    <div class="lightbox-bar">
-      <button type="button" class="icon" id="lb-prev" aria-label="Anterior">‹</button>
-      <p id="lightbox-caption"></p>
-      <a class="btn small" id="lb-open" target="_blank" rel="noopener">Abrir</a>
-      <button type="button" class="btn small danger" id="lb-delete">Borrar</button>
-      <button type="button" class="icon" id="lb-next" aria-label="Siguiente">›</button>
-    </div>
-  </dialog>
-
   <dialog id="activity-dialog">
     <form id="activity-form" autocomplete="off">
-      <h2 id="activity-title">Nueva actividad</h2>
+      <div class="dialog-head">
+        <h2 id="activity-title">Nueva actividad</h2>
+        <button type="button" class="icon-btn" data-close aria-label="Cerrar" data-icon="x"></button>
+      </div>
       <label>Título
         <input name="title" required maxlength="120" placeholder="Cena en el puerto">
       </label>
@@ -62,14 +90,36 @@
         <label>Tipo
           <select name="category"></select>
         </label>
-        <label>Coste (opcional)
+        <label>Coste
           <input name="cost" type="number" min="0" step="0.01" inputmode="decimal" placeholder="0,00">
         </label>
       </div>
-      <label>Lugar (opcional)
-        <input name="place" maxlength="200" placeholder="Nombre o dirección">
+      <label>Lugar
+        <span class="input-row">
+          <input name="place" maxlength="200" placeholder="Nombre o dirección">
+          <button type="button" class="btn small" id="geo-search"></button>
+        </span>
       </label>
-      <label>Notas (opcional)
+      <ul id="geo-results" class="geo-results" hidden></ul>
+      <div class="loc-row">
+        <span id="loc-chip" class="loc-chip" hidden><span id="loc-text"></span><button type="button" id="loc-clear" aria-label="Quitar ubicación">✕</button></span>
+        <button type="button" class="btn small" id="loc-here"></button>
+        <button type="button" class="btn small" id="loc-pick"></button>
+      </div>
+      <input type="hidden" name="lat">
+      <input type="hidden" name="lng">
+      <fieldset class="rating">
+        <legend>Valoración</legend>
+        <div class="stars-input">
+          <input type="radio" name="rating" id="r5" value="5"><label for="r5" title="5 estrellas">★</label>
+          <input type="radio" name="rating" id="r4" value="4"><label for="r4" title="4 estrellas">★</label>
+          <input type="radio" name="rating" id="r3" value="3"><label for="r3" title="3 estrellas">★</label>
+          <input type="radio" name="rating" id="r2" value="2"><label for="r2" title="2 estrellas">★</label>
+          <input type="radio" name="rating" id="r1" value="1"><label for="r1" title="1 estrella">★</label>
+        </div>
+        <button type="button" id="rating-clear" class="link-btn">Quitar</button>
+      </fieldset>
+      <label>Notas
         <textarea name="notes" rows="3" maxlength="2000" placeholder="Reserva, enlaces, qué llevar…"></textarea>
       </label>
       <div class="dialog-actions">
@@ -81,7 +131,10 @@
 
   <dialog id="profile-dialog">
     <form id="profile-form">
-      <h2 id="profile-title">¿Quién eres?</h2>
+      <div class="dialog-head">
+        <h2 id="profile-title">¿Quién eres?</h2>
+        <button type="button" class="icon-btn" data-close aria-label="Cerrar" data-icon="x"></button>
+      </div>
       <p class="hint" id="profile-hint">Tu nombre aparece junto a lo que añades y comentas.</p>
       <label>Nombre
         <input name="name" required maxlength="40" autocomplete="given-name" placeholder="Ana">
@@ -95,6 +148,50 @@
         <button type="submit" class="btn primary" id="profile-submit">Guardar</button>
       </div>
     </form>
+  </dialog>
+
+  <dialog id="data-dialog">
+    <div class="dialog-head">
+      <h2>Datos y móvil</h2>
+      <button type="button" class="icon-btn" data-close aria-label="Cerrar" data-icon="x"></button>
+    </div>
+    <p class="hint" id="demo-hint" hidden>Estás en modo demo: lo que añadas se guarda solo en este navegador. Para compartirlo hay que conectar Supabase (ver docs/DESPLIEGUE.md).</p>
+    <section>
+      <h3>En el móvil</h3>
+      <div class="action-list">
+        <button type="button" class="list-btn" id="install-btn" hidden></button>
+        <button type="button" class="list-btn" id="share-btn"></button>
+      </div>
+      <p class="hint" id="ios-hint" hidden>En iPhone: toca «Compartir» y después «Añadir a pantalla de inicio» para instalarla como una app.</p>
+    </section>
+    <section>
+      <h3>Exportar los datos</h3>
+      <div class="action-list" id="export-list"></div>
+    </section>
+    <p class="hint credits">Mapa © colaboradores de OpenStreetMap · teselas de OpenFreeMap · rutas de OSRM · búsqueda con Nominatim.</p>
+  </dialog>
+
+  <dialog id="lightbox" aria-label="Foto">
+    <button type="button" class="icon-btn lightbox-close" data-close aria-label="Cerrar" data-icon="x"></button>
+    <div class="lightbox-stage"><img id="lightbox-img" alt=""></div>
+    <div class="lightbox-info">
+      <div class="lightbox-nav">
+        <button type="button" class="icon-btn" id="lb-prev" aria-label="Anterior" data-icon="chevronL"></button>
+        <div>
+          <p id="lightbox-caption" class="lb-caption"></p>
+          <p id="lightbox-where" class="lb-where"></p>
+        </div>
+        <button type="button" class="icon-btn" id="lb-next" aria-label="Siguiente" data-icon="chevronR"></button>
+      </div>
+      <div class="lightbox-actions">
+        <button type="button" class="btn small" id="lb-map" hidden></button>
+        <button type="button" class="btn small" id="lb-here" hidden></button>
+        <button type="button" class="btn small" id="lb-pick" hidden></button>
+        <button type="button" class="btn small" id="lb-unplace" hidden>Quitar ubicación</button>
+        <a class="btn small" id="lb-open" target="_blank" rel="noopener">Abrir original</a>
+        <button type="button" class="btn small danger" id="lb-delete">Borrar</button>
+      </div>
+    </div>
   </dialog>
 
   <div id="toast" class="toast" role="status" hidden></div>
