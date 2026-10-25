@@ -30,7 +30,16 @@ const PATHS = {
   file: '<path d="M7 3.5h7l4 4V20a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4.5a1 1 0 0 1 1-1z"/><path d="M14 3.5v4h4"/>',
   images: '<rect x="3.5" y="5" width="17" height="14" rx="2.5"/><circle cx="9" cy="10" r="1.6"/><path d="m4 17 5-4.5 3.5 3 3-2.5 4.5 4"/>',
   star: '<path d="m12 3.5 2.6 5.4 5.9.8-4.3 4.1 1 5.9-5.2-2.8-5.2 2.8 1-5.9-4.3-4.1 5.9-.8z" fill="currentColor"/>',
+  book: '<path d="M5 4.5A1.5 1.5 0 0 1 6.5 3H19v15H6.5A1.5 1.5 0 0 0 5 19.5z"/><path d="M5 19.5A1.5 1.5 0 0 0 6.5 21H19v-3"/><path d="M9.5 7.5h6M9.5 11h4"/>',
   car: '<path d="M5 16.5V12l1.6-4.2A2 2 0 0 1 8.5 6.5h7a2 2 0 0 1 1.9 1.3L19 12v4.5M3.5 16.5h17M7.5 16.5v2M16.5 16.5v2"/><circle cx="8" cy="13" r=".9" fill="currentColor"/><circle cx="16" cy="13" r=".9" fill="currentColor"/>',
+  wallet: '<path d="M4 7.5A2.5 2.5 0 0 1 6.5 5H17a2 2 0 0 1 2 2v1"/><path d="M4 7.5v10A2.5 2.5 0 0 0 6.5 20H18a2 2 0 0 0 2-2v-8a1.5 1.5 0 0 0-1.5-1.5h-12A2.5 2.5 0 0 1 4 7.5z"/><circle cx="15.5" cy="14" r="1.2" fill="currentColor"/>',
+  bag: '<rect x="4" y="7.5" width="16" height="12.5" rx="3"/><path d="M9 7.5V6a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v1.5M4 13h16M10.5 13v1.5h3V13"/>',
+  check: '<path d="m5 12.5 4.5 4.5L19 7.5"/>',
+  compass: '<circle cx="12" cy="12" r="8.5"/><path d="m15.5 8.5-2 5-5 2 2-5z"/>',
+  copy: '<rect x="8.5" y="8.5" width="11" height="11" rx="2.5"/><path d="M15.5 8.5V6.5A2.5 2.5 0 0 0 13 4H6.5A2.5 2.5 0 0 0 4 6.5V13A2.5 2.5 0 0 0 6.5 15.5h2"/>',
+  arrowRight: '<path d="M5 12h14M13 6l6 6-6 6"/>',
+  sparkle: '<path d="M12 3.5 13.8 9l5.7 1.8-5.7 1.8L12 18l-1.8-5.4L4.5 10.8 10.2 9z"/><path d="M19 3v3M17.5 4.5h3"/>',
+  heart: '<path d="M12 20s-7.5-4.5-7.5-10A4.2 4.2 0 0 1 12 7.6 4.2 4.2 0 0 1 19.5 10C19.5 15.5 12 20 12 20z"/>',
 };
 
 export function icon(name, size = 20) {

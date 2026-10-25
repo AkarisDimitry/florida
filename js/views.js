@@ -3,12 +3,16 @@ import { config } from "./config.js";
 import { state, ctx } from "./state.js";
 import { icon } from "./icons.js";
 import {
-  $, esc, hasCoords, categoryOf, utc, capitalize, todayIso, fmtDayLong, fmtDayShort, money, formatKm,
-  stars, dayColor, groupBy,
+  $, esc, hasCoords, categoryOf, utc, capitalize, todayIso, fmtDayLong, fmtDayShort, fmtDate, money, formatKm, formatTemp,
+  stars, dayColor, groupBy, CATEGORIES,
 } from "./util.js";
-import { allDays, byTime, locatedStops, stopsOfDay, foodStops, totalCost, photosNewestFirst, currentRoutes } from "./trip.js";
-import { directionsUrl } from "./geo.js";
+import { allDays, byTime, locatedStops, stopsOfDay, totalCost, photosNewestFirst, currentRoutes, friendsNow } from "./trip.js";
+import { directionsUrl, distanceKm } from "./geo.js";
 import { getName } from "./store.js";
+import { describeWeather, packingTips, WEATHER_KIND } from "./weather.js";
+import { buildAlbum, photoDay } from "./album.js";
+import { planNav, renderExpenses, renderPacking } from "./extras.js";
+import { totalCents, fromCents } from "./ledger.js";
 
 const { trip } = config;
 
@@ -31,14 +35,23 @@ export function renderHeader() {
   $("#session-btn").textContent = (name || ctx.store?.user?.email || "?").charAt(0).toUpperCase();
   $("#session-btn").title = name || ctx.store?.user?.email || "Entrar";
 
+  // Aviso para quien administra: solicitudes de acceso esperando aprobación (también como punto rojo en el avatar).
+  const pending = state.isAdmin ? state.requests.filter((r) => r.status === "pending").length : 0;
+  $("#session-btn").dataset.badge = pending ? String(pending) : "";
+
   const banner = $("#banner");
   const message = state.offline
     ? "Sin conexión: se muestra la última copia guardada en este dispositivo."
     : ctx.store?.mode === "demo"
-      ? "Modo demo: lo que añadas se guarda solo en este navegador. Conecta Supabase en js/config.js para compartirlo."
+      ? "Modo demo: lo que añadas (fotos incluidas) solo lo ves tú, en este navegador. Para compartirlo entre viajeros hay que conectar Supabase (ver docs/DESPLIEGUE.md)."
       : "";
-  banner.hidden = !message;
-  banner.textContent = message;
+  if (!state.offline && pending) {
+    banner.innerHTML = `<button type="button" class="banner-btn" data-action="open-access">${icon("share", 16)} ${pending === 1 ? "1 persona espera" : `${pending} personas esperan`} que apruebes su acceso <u>Ver</u></button>`;
+    banner.hidden = false;
+  } else {
+    banner.hidden = !message;
+    banner.textContent = message;
+  }
 }
 
 // ---------- bloques comunes ----------
@@ -50,8 +63,10 @@ export function gate(title, text, buttonHtml = "") {
 
 export const enterButton = `<button class="btn primary" data-action="profile">Entrar</button>`;
 
-const stat = (label, value, iconName) =>
-  `<div class="stat"><span class="stat-ico">${icon(iconName, 18)}</span><div><span class="stat-label">${esc(label)}</span><strong>${esc(value)}</strong></div></div>`;
+const stat = (label, value, iconName, action = "") => {
+  const body = `<span class="stat-ico">${icon(iconName, 18)}</span><div><span class="stat-label">${esc(label)}</span><strong>${esc(value)}</strong></div>`;
+  return action ? `<button type="button" class="stat is-link" data-action="${action}">${body}</button>` : `<div class="stat">${body}</div>`;
+};
 
 const starsHtml = (n) => `<span class="stars" title="${n} de 5" aria-label="${n} de 5 estrellas">${stars(n)}</span>`;
 
@@ -59,7 +74,117 @@ function mapsSearchUrl(place) {
   return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(place)}`;
 }
 
+// ---------- tiempo y panel "Hoy" ----------
+
+export function weatherChip(day, { withRain = false } = {}) {
+  const w = state.weather.get(day);
+  if (!w || w.tmax == null) return "";
+  const [emoji, label] = describeWeather(w.code);
+  const rain = w.rain != null && w.rain >= 0.1 ? `, lluvia ${w.rain.toFixed(1).replace(".", ",")} mm` : "";
+  const title = `${label}: máx. ${formatTemp(w.tmax)}, mín. ${formatTemp(w.tmin)}${rain}. ${WEATHER_KIND[w.kind]}.`;
+  const prob = withRain && w.prob != null ? `<small class="wx-rain">💧 ${w.prob}%</small>` : "";
+  return `<span class="wx wx-${w.kind}" title="${esc(title)}"><span class="wx-ico">${emoji}</span>${esc(formatTemp(w.tmax))}<small>/${esc(formatTemp(w.tmin))}</small>${prob}</span>`;
+}
+
+const two = (n) => String(n).padStart(2, "0");
+
+// Capa decorativa del panel "Hoy" según el tiempo (solo CSS; se desactiva con "sin animaciones").
+function fxKind(code) {
+  if (code == null) return "";
+  if (code <= 1) return "sun";
+  if (code === 2) return "partly";
+  if (code === 3) return "cloud";
+  if (code === 45 || code === 48) return "fog";
+  if (code >= 95) return "storm";
+  if ((code >= 71 && code <= 77) || code === 85 || code === 86) return "snow";
+  return "rain";
+}
+const drops = (n, extra = "") => Array.from({ length: n }, (_, i) => `<i style="left:${(i * 37 + 11) % 100}%;animation-delay:${-((i * 53) % 100) / 40}s;animation-duration:${0.8 + ((i * 29) % 50) / 100}s${extra}"></i>`).join("");
+function weatherFx(w) {
+  const kind = fxKind(w?.code);
+  if (!kind) return "";
+  const inner = {
+    sun: `<b class="rays"></b>`,
+    partly: `<b class="rays"></b><b class="cloud c1"></b><b class="cloud c2"></b>`,
+    cloud: `<b class="cloud c1"></b><b class="cloud c2"></b><b class="cloud c3"></b>`,
+    fog: `<b class="band b1"></b><b class="band b2"></b><b class="band b3"></b>`,
+    rain: `<b class="cloud c1"></b>${drops(16)}`,
+    storm: `<b class="cloud c1 dark"></b>${drops(18)}<b class="flash"></b>`,
+    snow: `<b class="cloud c1"></b>${drops(20, ";width:6px;height:6px")}`,
+  }[kind];
+  return `<div class="fx fx-${kind}" aria-hidden="true">${inner}</div>`;
+}
+
+function tripPhase() {
+  const today = todayIso();
+  if (!trip.start) return "none";
+  if (today < trip.start) return "before";
+  if (trip.end && today > trip.end) return "after";
+  return "during";
+}
+
+export function renderToday() {
+  const phase = tripPhase();
+  if (phase === "none") return "";
+  const today = todayIso();
+  const days = allDays();
+
+  if (phase === "before") {
+    const diff = Math.round((utc(trip.start) - utc(today)) / 864e5);
+    const tips = packingTips(days.slice(0, 7).map((d) => state.weather.get(d)));
+    const sun = state.weather.get(trip.start);
+    return `<section class="today is-before">${weatherFx(sun)}
+      <div class="today-top">
+        <div><p class="eyebrow">Cuenta atrás</p><h2>${diff === 1 ? "Mañana empieza el viaje" : `Faltan ${diff} días`}</h2>
+        <p class="today-sub">${esc([trip.destination, `${fmtDate.format(utc(trip.start))}`].filter(Boolean).join(" · "))}</p></div>
+        ${weatherChip(trip.start)}
+      </div>
+      ${tips.length ? `<p class="today-label">Para la maleta, según el tiempo típico de esas fechas${sun?.kind === "forecast" ? " (previsión)" : ""}</p><div class="today-tips">${tips.map((t) => `<span>${esc(t)}</span>`).join("")}</div>` : ""}
+    </section>`;
+  }
+
+  if (phase === "after") {
+    return `<section class="today is-after">
+      <p class="eyebrow">Viaje terminado</p><h2>¡Qué viaje!</h2>
+      <p class="today-sub">Todo lo que habéis recogido ya está en el álbum, listo para descargar en PDF.</p>
+      <div class="today-actions"><button class="btn" data-action="go-album">${icon("book", 16)} Ver el álbum</button></div>
+    </section>`;
+  }
+
+  const acts = state.activities.filter((a) => a.day === today).sort(byTime);
+  const now = `${two(new Date().getHours())}:${two(new Date().getMinutes())}`;
+  const next = acts.find((a) => a.start_time && a.start_time.slice(0, 5) >= now) ?? acts.find((a) => !a.start_time);
+  const w = state.weather.get(today);
+  const city = state.places[today];
+  const photosToday = state.photos.filter((p) => photoDay(p) === today).length;
+  const spent = acts.reduce((s, a) => s + (a.cost || 0), 0);
+  const far = next && hasCoords(next) && state.me ? formatKm(distanceKm(state.me, next)) : "";
+  const nextBlock = next
+    ? `<div class="today-next">
+        <p class="today-label">${next.start_time && next.start_time.slice(0, 5) >= now ? "Lo siguiente" : "Sin hora fija"}</p>
+        <h3>${categoryOf(next.category).emoji} ${esc(next.title)}</h3>
+        <p>${esc([next.start_time?.slice(0, 5), next.place, far && `a ${far} en línea recta`].filter(Boolean).join(" · "))}</p>
+        <div class="today-actions">
+          ${hasCoords(next) ? `<a class="btn small" href="${esc(directionsUrl(next.lat, next.lng))}" target="_blank" rel="noopener">${icon("navigate", 15)} Cómo llegar</a><button class="btn small" data-action="show-on-map" data-id="${esc(next.id)}">${icon("map", 15)} En el mapa</button>` : ""}
+          ${hasCoords(next) && !state.me ? `<button class="btn small" data-action="locate-me">${icon("locate", 15)} ¿A cuánto estoy?</button>` : ""}
+        </div>
+      </div>`
+    : `<div class="today-next"><p class="today-label">Planes de hoy</p><h3>${acts.length ? "Ya no quedan más planes por hoy" : "Hoy no hay planes apuntados"}</h3></div>`;
+  return `<section class="today is-during">${weatherFx(w)}
+    <div class="today-top">
+      <div><p class="eyebrow">Hoy · día ${days.indexOf(today) + 1} de ${days.length}</p><h2>${esc(capitalize(fmtDayLong.format(utc(today))))}</h2>${city ? `<p class="today-sub">${icon("pin", 14)} ${esc(city)}</p>` : ""}</div>
+      ${weatherChip(today, { withRain: true })}
+    </div>
+    ${w?.sunrise ? `<p class="today-sun">🌅 ${esc(w.sunrise)} · 🌇 ${esc(w.sunset)}</p>` : ""}
+    ${nextBlock}
+    <div class="today-stats"><span>${icon("route", 15)} ${acts.length} ${acts.length === 1 ? "plan" : "planes"}</span><span>${icon("download", 15)} ${esc(money.format(spent))}</span><span>${icon("camera", 15)} ${photosToday} ${photosToday === 1 ? "foto" : "fotos"}</span></div>
+    <div class="today-actions"><button class="btn small primary" data-action="upload">${icon("camera", 15)} Añadir foto</button><button class="btn small" data-action="add" data-day="${esc(today)}">${icon("plus", 15)} Añadir plan</button></div>
+  </section>`;
+}
+
 // ---------- itinerario ----------
+
+const searchText = (a) => [a.title, a.place, a.notes, a.created_by_name, categoryOf(a.category).label].filter(Boolean).join(" ").toLowerCase();
 
 function card(a, comments, index) {
   const cat = categoryOf(a.category);
@@ -70,6 +195,11 @@ function card(a, comments, index) {
   else if (located) chips.push(`<button class="chip is-link" data-action="show-on-map" data-id="${esc(a.id)}">${icon("pin", 14)} Ver en el mapa</button>`);
   if (located) chips.push(`<a class="chip is-link" href="${esc(directionsUrl(a.lat, a.lng))}" target="_blank" rel="noopener">${icon("navigate", 14)} Cómo llegar</a>`);
   if (a.cost != null) chips.push(`<span class="chip">${esc(money.format(a.cost))}</span>`);
+  if (a.cost > 0) {
+    chips.push(state.expenses.some((e) => e.activity_id === a.id)
+      ? `<button class="chip is-link" data-action="go-expenses">${icon("wallet", 14)} Repartido</button>`
+      : `<button class="chip is-link" data-action="split-activity" data-id="${esc(a.id)}">${icon("wallet", 14)} Repartir</button>`);
+  }
   if (a.rating) chips.push(`<span class="chip">${starsHtml(a.rating)}</span>`);
   if (a.created_by_name) chips.push(`<span class="chip muted">${esc(a.created_by_name)}</span>`);
 
@@ -82,7 +212,7 @@ function card(a, comments, index) {
     )
     .join("");
 
-  return `<article class="card" style="--i:${index}">
+  return `<article class="card" style="--i:${index}" data-cat="${esc(a.category)}" data-search="${esc(searchText(a))}">
     <div class="card-rail">
       <span class="card-time">${esc(a.start_time ? a.start_time.slice(0, 5) : "—")}</span>
       <span class="card-emoji" title="${esc(cat.label)}">${cat.emoji}</span>
@@ -110,38 +240,54 @@ function card(a, comments, index) {
 }
 
 export function renderPlan() {
+  const nav = planNav();
+  if (state.planTab === "expenses") return nav + renderExpenses();
+  if (state.planTab === "packing") return nav + renderPacking();
+  return nav + renderDays();
+}
+
+function renderDays() {
   const routes = currentRoutes();
   const km = routes.reduce((sum, r) => sum + r.km, 0);
   const roadRoutes = routes.some((r) => r.road);
+  const spent = state.expenses.length
+    ? stat("Gastos repartidos", money.format(fromCents(totalCents())), "wallet", "go-expenses")
+    : stat("Costes anotados", money.format(totalCost()), "wallet", "go-expenses");
   const stats = `<div class="stats">
-    ${stat("Cuenta atrás", countdown() ? capitalize(countdown()) : "—", "calendar")}
+    ${stat("Días del viaje", allDays().length || "—", "calendar")}
     ${stat("Actividades", state.activities.length, "route")}
-    ${stat("Gasto anotado", money.format(totalCost()), "download")}
-    ${stat(roadRoutes ? "Recorrido por carretera" : "Recorrido", km ? formatKm(km) : "—", "car")}
+    ${spent}
+    ${stat(roadRoutes ? "Recorrido por carretera" : "Recorrido", km ? formatKm(km) : "—", "car", km ? "go-map" : "")}
   </div>`;
 
   const days = allDays();
   if (!days.length) {
-    return (
-      stats +
-      gate("Todavía no hay nada", "Añade la primera actividad del viaje.", `<button class="btn primary" data-action="add" data-day="${todayIso()}">${icon("plus", 18)} Añadir actividad</button>`)
-    );
+    return `<div class="plan-grid"><aside class="plan-aside">${renderToday()}${stats}</aside><div class="plan-main">${gate("Todavía no hay nada", "Añade la primera actividad del viaje.", `<button class="btn primary" data-action="add" data-day="${todayIso()}">${icon("plus", 18)} Añadir actividad</button>`)}</div></div>`;
   }
 
   const commentsByActivity = groupBy(state.comments, (c) => c.activity_id);
   const activitiesByDay = groupBy([...state.activities].sort(byTime), (a) => a.day);
   const routeByDay = new Map(routes.map((r) => [r.day, r]));
   let index = 0;
+  const chips = [`<button class="chip-filter ${state.filter.cat ? "" : "is-on"}" data-action="filter-cat" data-cat="">Todo</button>`]
+    .concat(Object.entries(CATEGORIES).map(([key, c]) => `<button class="chip-filter ${state.filter.cat === key ? "is-on" : ""}" data-action="filter-cat" data-cat="${key}">${c.emoji} ${c.label}</button>`))
+    .join("");
+  const filters = `<div class="plan-filters">
+    <label class="search"><span class="search-ico">${icon("search", 16)}</span><input id="plan-search" type="search" placeholder="Buscar actividades, lugares, notas…" value="${esc(state.filter.q)}" autocomplete="off" enterkeyhint="search"></label>
+    <div class="filter-row">${chips}</div>
+  </div>
+  <p class="empty filter-empty" hidden>Ningún plan coincide con la búsqueda.</p>`;
 
   const sections = days.map((day, i) => {
     const items = activitiesByDay.get(day) ?? [];
     const route = routeByDay.get(day);
-    const sub = [items.length ? `${items.length} ${items.length === 1 ? "plan" : "planes"}` : "Sin planes", route ? `${formatKm(route.km)}${route.road ? "" : " en línea recta"}` : ""].filter(Boolean).join(" · ");
+    const sub = [state.places[day], items.length ? `${items.length} ${items.length === 1 ? "plan" : "planes"}` : "Sin planes", route ? `${formatKm(route.km)}${route.road ? "" : " en línea recta"}` : ""].filter(Boolean).join(" · ");
     return `<section class="day" style="--c:${dayColor(i)}">
       <header class="day-head">
         <span class="day-dot"></span>
-        <div class="day-title"><h2>${esc(capitalize(fmtDayLong.format(utc(day))))}</h2><p class="day-sub">${esc(sub)}</p></div>
+        <div class="day-title"><h2>${esc(capitalize(fmtDayLong.format(utc(day))))}</h2><p class="day-sub">${weatherChip(day)}<span>${esc(sub)}</span></p></div>
         <div class="day-tools">
+          ${items.length ? `<button class="icon-btn sm" title="Compartir el plan del día" aria-label="Compartir el plan del día" data-action="share-day" data-day="${esc(day)}">${icon("share", 17)}</button>` : ""}
           ${items.some(hasCoords) ? `<button class="icon-btn sm" title="Ver el día en el mapa" aria-label="Ver el día en el mapa" data-action="day-on-map" data-day="${esc(day)}">${icon("map", 18)}</button>` : ""}
           <button class="icon-btn sm accent" title="Añadir actividad" aria-label="Añadir actividad" data-action="add" data-day="${esc(day)}">${icon("plus", 18)}</button>
         </div>
@@ -149,7 +295,7 @@ export function renderPlan() {
       ${items.length ? items.map((a) => card(a, commentsByActivity.get(a.id) ?? [], index++)).join("") : `<p class="empty">Sin planes todavía.</p>`}
     </section>`;
   });
-  return stats + sections.join("");
+  return `<div class="plan-grid"><aside class="plan-aside">${renderToday()}${stats}</aside><div class="plan-main">${filters}${sections.join("")}</div></div>`;
 }
 
 // ---------- fotos ----------
@@ -167,21 +313,35 @@ export function renderPhotos() {
   if (!photos.length) {
     return head + gate("Aún no hay fotos", "Sube las primeras: si traen ubicación GPS, aparecerán en el mapa donde se tomaron.", `<button class="btn primary" data-action="upload">${icon("camera", 18)} Subir fotos</button>`);
   }
-  const grid = photos
-    .map(
-      (p, i) => `<button class="photo" style="--i:${Math.min(i, 24)}" data-action="open-photo" data-id="${esc(p.id)}" aria-label="Abrir foto de ${esc(p.created_by_name || "un viajero")}">
-        <img src="${esc(p.thumb_url)}" alt="" loading="lazy" decoding="async" onload="this.classList.add('loaded')">
-        ${hasCoords(p) ? `<span class="geo-badge" title="Con ubicación">${icon("pin", 13)}</span>` : ""}
-      </button>`,
-    )
+  // Se agrupan por día siguiendo el mismo orden que el visor (de la más reciente a la más antigua).
+  const groups = [];
+  for (const p of photos) {
+    const day = photoDay(p);
+    if (groups.at(-1)?.day === day) groups.at(-1).items.push(p);
+    else groups.push({ day, items: [p] });
+  }
+  let n = 0;
+  const html = groups
+    .map((g) => {
+      const label = g.day ? capitalize(fmtDayShort.format(utc(g.day))) : "Sin fecha";
+      const thumbs = g.items
+        .map(
+          (p, k) => `<button class="photo ${k === 0 && g.items.length >= 4 ? "is-featured" : ""}" style="--i:${Math.min(n++, 24)}" data-action="open-photo" data-id="${esc(p.id)}" aria-label="Abrir foto de ${esc(p.created_by_name || "un viajero")}">
+            <img src="${esc(k === 0 && g.items.length >= 4 ? p.full_url || p.thumb_url : p.thumb_url)}" alt="${esc(p.caption || "")}" loading="lazy" decoding="async" onload="this.classList.add('loaded')">
+            ${hasCoords(p) ? `<span class="geo-badge" title="Con ubicación">${icon("pin", 13)}</span>` : ""}
+          </button>`,
+        )
+        .join("");
+      return `<section class="photo-day"><h3>${esc(label)} <small>${g.items.length} ${g.items.length === 1 ? "foto" : "fotos"}</small></h3><div class="photo-grid">${thumbs}</div></section>`;
+    })
     .join("");
-  return `${head}<div class="photo-grid">${grid}</div>`;
+  return head + html;
 }
 
 // ---------- dónde comimos ----------
 
 export function renderFood() {
-  const list = foodStops();
+  const list = buildAlbum().food; // mejor valorados primero, con las fotos hechas en cada sitio
   if (!list.length) {
     return gate(
       "Dónde comimos",
@@ -217,13 +377,14 @@ export function renderFood() {
             ${located ? `<a class="chip is-link" href="${esc(directionsUrl(a.lat, a.lng))}" target="_blank" rel="noopener">${icon("navigate", 14)} Cómo llegar</a>` : ""}
           </div>
           ${a.notes ? `<p class="card-notes">${esc(a.notes)}</p>` : ""}
+          ${a.photos.length ? `<div class="food-photos">${a.photos.slice(0, 4).map((p) => `<button class="food-photo" data-action="open-photo" data-id="${esc(p.id)}" aria-label="Abrir foto"><img src="${esc(p.thumb_url)}" alt="" loading="lazy" decoding="async" onload="this.classList.add('loaded')"></button>`).join("")}${a.photos.length > 4 ? `<span class="food-more">+${a.photos.length - 4}</span>` : ""}</div>` : ""}
         </div>
       </article>`;
     })
     .join("");
-  return `<div class="page-head"><div><h2>Dónde comimos</h2><p class="page-sub">Todos los sitios de comida del viaje</p></div>
+  return `<div class="page-head"><div><h2>Dónde comimos</h2><p class="page-sub">De mejor a peor valorado</p></div>
     <div class="head-actions"><button class="btn small primary" data-action="add" data-day="${todayIso()}" data-category="comida">${icon("plus", 16)} Añadir</button></div></div>
-    ${summary}${cards}`;
+    ${summary}<div class="food-grid">${cards}</div>`;
 }
 
 // ---------- mapa: chips de días y hoja inferior ----------
@@ -231,8 +392,11 @@ export function renderFood() {
 export function renderChips() {
   const days = allDays();
   const counts = new Map([...groupBy(locatedStops(days), (s) => s.day)].map(([day, list]) => [day, list.length]));
+  const friends = friendsNow();
+  const live = friends.length ? `<button class="chip-day live" data-action="fit-friends"><span class="dot"></span>${friends.length} en vivo</button>` : "";
   const all = `<button class="chip-day ${state.day ? "" : "is-on"}" role="tab" aria-selected="${!state.day}" data-action="select-day" data-day="">Todo el viaje</button>`;
   return (
+    live +
     all +
     days
       .map((day, i) => {
@@ -277,5 +441,6 @@ export function renderSheet() {
       </div>`;
     })
     .join("");
-  return `<div class="sheet-head"><h2>${esc(title)}</h2><p>${facts.join(" · ")}</p></div><div class="sheet-track">${cards}</div>`;
+  const city = state.day ? state.places[state.day] : "";
+  return `<div class="sheet-head"><h2>${esc(title)}${state.day ? weatherChip(state.day) : ""}</h2><p>${[city ? `${icon("pin", 13)} ${esc(city)}` : "", ...facts].filter(Boolean).join(" · ")}</p></div><div class="sheet-track">${cards}</div>`;
 }

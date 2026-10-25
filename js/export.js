@@ -3,6 +3,7 @@ import { config } from "./config.js";
 import { state } from "./state.js";
 import { esc, categoryOf, download, slug, toast, hasCoords } from "./util.js";
 import { currentRoutes, locatedStops, photoTime, photosNewestFirst } from "./trip.js";
+import { shares, isValid } from "./ledger.js";
 
 const { trip } = config;
 const stamp = () => new Date().toISOString().slice(0, 10);
@@ -16,6 +17,8 @@ export function exportJson() {
     viaje: trip,
     actividades: state.activities,
     comentarios: state.comments,
+    gastos: state.expenses,
+    maleta: state.checklist,
     // Los enlaces de las imágenes son temporales; las fotos en sí van en el ZIP.
     fotos: state.photos.map(({ full_url, thumb_url, ...meta }) => meta),
   };
@@ -40,6 +43,19 @@ export function exportCsv() {
     .map((a) => [a.day, a.start_time?.slice(0, 5), a.title, categoryOf(a.category).label, a.place, num(a.lat), num(a.lng), num(a.cost), a.rating, a.notes, a.created_by_name]);
   const text = [header, ...rows].map((r) => r.map(csvCell).join(";")).join("\r\n");
   download(`${baseName()}-actividades-${stamp()}.csv`, "text/csv", `﻿${text}`);
+}
+
+// Gastos repartidos: una fila por gasto, con quién pagó, entre quién se reparte y lo que le toca a cada uno.
+export function exportExpensesCsv() {
+  const header = ["dia", "concepto", "importe", "pago", "reparto", "autor"];
+  const rows = [...state.expenses]
+    .filter(isValid)
+    .sort((a, b) => a.day.localeCompare(b.day) || a.created_at.localeCompare(b.created_at))
+    // "reparto" usa el mismo cálculo que la web (en céntimos), no importe / personas: 10 € entre 3 son 3,34 + 3,33 + 3,33.
+    .map((e) => [e.day, e.title, num(Number(e.amount)), e.paid_by, [...shares(e)].map(([name, c]) => `${name}: ${num((c / 100).toFixed(2))}`).join("; "), e.created_by_name]);
+  if (!rows.length) throw new Error("Todavía no hay gastos repartidos que exportar.");
+  const text = [header, ...rows].map((r) => r.map(csvCell).join(";")).join("\r\n");
+  download(`${baseName()}-gastos-${stamp()}.csv`, "text/csv", `﻿${text}`);
 }
 
 // ---------- GPX: lugares y rutas para apps de navegación y Google Earth ----------
@@ -148,7 +164,7 @@ export async function exportPhotosZip() {
   if (!photos.length) throw new Error("Todavía no hay fotos que descargar.");
   const JSZip = await loadJsZip();
   const zip = new JSZip();
-  const index = [["archivo", "latitud", "longitud", "fecha", "autor"]];
+  const index = [["archivo", "latitud", "longitud", "fecha", "autor", "pie_de_foto"]];
   for (const [i, photo] of photos.entries()) {
     toast(`Preparando fotos… ${i + 1} de ${photos.length}`, 120_000);
     const response = await fetch(photo.full_url);
@@ -156,7 +172,7 @@ export async function exportPhotosZip() {
     const when = photoTime(photo);
     const name = `${when.slice(0, 10)}_${when.slice(11, 16).replace(":", "")}_${slug(photo.created_by_name || "viajero")}_${photo.id.slice(0, 6)}.jpg`;
     zip.file(name, await response.blob());
-    index.push([name, num(photo.lat), num(photo.lng), when, photo.created_by_name]);
+    index.push([name, num(photo.lat), num(photo.lng), when, photo.created_by_name, photo.caption]);
   }
   zip.file("ubicaciones.csv", `﻿${index.map((r) => r.map(csvCell).join(";")).join("\r\n")}`);
   const blob = await zip.generateAsync({ type: "blob", compression: "STORE" }); // los JPEG ya van comprimidos
@@ -164,4 +180,7 @@ export async function exportPhotosZip() {
   toast(`${photos.length} fotos descargadas`);
 }
 
-export const EXPORTERS = { json: exportJson, csv: exportCsv, gpx: exportGpx, geojson: exportGeoJson, ics: exportIcs, zip: exportPhotosZip };
+// El PDF del álbum es un módulo grande: solo se carga cuando se pide.
+export const exportAlbum = async () => (await import("./pdf.js")).exportAlbumPdf();
+
+export const EXPORTERS = { pdf: exportAlbum, json: exportJson, csv: exportCsv, gastos: exportExpensesCsv, gpx: exportGpx, geojson: exportGeoJson, ics: exportIcs, zip: exportPhotosZip };

@@ -10,6 +10,25 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-title" content="Viaje">
+  <script>
+    // Red de seguridad: GitHub Pages permite que el navegador guarde los archivos 10 minutos, así que tras una
+    // actualización puede cargar esta página nueva con CSS o JS viejos y no arrancar. Si la app no avisa de que ha
+    // arrancado, se vuelven a pedir todos los archivos sin caché y se recarga (una sola vez por sesión).
+    (() => {
+      const KEY = "viaje.recargaSinCache";
+      const heal = () => {
+        try {
+          if (sessionStorage.getItem(KEY)) return;
+          sessionStorage.setItem(KEY, "1");
+        } catch {
+          return;
+        }
+        const own = performance.getEntriesByType("resource").map((r) => r.name).filter((u) => u.startsWith(location.origin));
+        Promise.all([...new Set([location.href, ...own])].map((u) => fetch(u, { cache: "reload" }).catch(() => {}))).then(() => location.reload());
+      };
+      addEventListener("load", () => setTimeout(() => document.documentElement.dataset.appReady || heal(), 5000));
+    })();
+  </script>
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
@@ -19,12 +38,14 @@
   <script type="module" src="js/app.js"></script>
 </head>
 <body data-view="map">
+  <script>document.body.dataset.view = { "#plan": "plan", "#gastos": "plan", "#maleta": "plan", "#fotos": "photos", "#comida": "food", "#album": "album" }[location.hash] || "map";</script>
   <header class="appbar">
     <div class="appbar-title">
       <h1 id="trip-name"></h1>
       <p class="appbar-sub" id="trip-sub"></p>
     </div>
     <div class="appbar-actions">
+      <button type="button" id="live-chip" class="live-chip" hidden aria-label="Estás compartiendo tu ubicación. Pulsa para dejar de compartir"><span class="live-dot"></span>En vivo</button>
       <button type="button" id="data-btn" class="icon-btn" aria-label="Datos y móvil" title="Datos y móvil"></button>
       <button type="button" id="session-btn" class="avatar" aria-label="Perfil">?</button>
     </div>
@@ -32,7 +53,7 @@
 
   <div id="banner" class="banner" hidden></div>
 
-  <main class="page" id="main" aria-live="polite"></main>
+  <main class="page" id="main" aria-live="polite"><div class="skeleton" aria-hidden="true"><i></i><i></i><i></i><i></i></div></main>
 
   <section id="map-view" class="map-view" hidden aria-label="Mapa del viaje">
     <div id="map" class="map"></div>
@@ -42,6 +63,7 @@
         <button type="button" id="fab-play" class="fab fab-accent" aria-label="Reproducir el viaje" title="Reproducir el viaje"></button>
         <button type="button" id="fab-fit" class="fab" aria-label="Ver todo el viaje" title="Ver todo el viaje"></button>
         <button type="button" id="fab-locate" class="fab" aria-label="Mi ubicación" title="Mi ubicación"></button>
+        <button type="button" id="fab-discover" class="fab" aria-label="Descubrir cerca" title="Descubrir cerca"></button>
         <button type="button" id="fab-layers" class="fab" aria-label="Capas del mapa" title="Capas del mapa" aria-expanded="false"></button>
       </div>
       <div id="layers-panel" class="layers-panel" hidden>
@@ -49,6 +71,8 @@
         <label class="switch"><input type="checkbox" data-layer="stops"><span>Lugares</span></label>
         <label class="switch"><input type="checkbox" data-layer="routes"><span>Rutas</span></label>
         <label class="switch"><input type="checkbox" data-layer="photos"><span>Fotos</span></label>
+        <label class="switch"><input type="checkbox" data-layer="friends"><span>Viajeros en vivo</span></label>
+        <label class="switch" id="live-switch-row" hidden><input type="checkbox" id="live-switch"><span>Compartir mi ubicación</span></label>
         <p class="panel-title">Tipo de ruta</p>
         <div class="segmented" role="group" aria-label="Tipo de ruta">
           <button type="button" data-road="true">Carretera</button>
@@ -65,6 +89,7 @@
     <button type="button" class="tab" data-view="plan"></button>
     <button type="button" class="tab" data-view="photos"></button>
     <button type="button" class="tab" data-view="food"></button>
+    <button type="button" class="tab" data-view="album"></button>
   </nav>
 
   <input type="file" id="photo-input" accept="image/*" multiple hidden>
@@ -129,6 +154,63 @@
     </form>
   </dialog>
 
+  <dialog id="expense-dialog">
+    <form id="expense-form" autocomplete="off">
+      <div class="dialog-head">
+        <h2 id="expense-heading">Nuevo gasto</h2>
+        <button type="button" class="icon-btn" data-close aria-label="Cerrar" data-icon="x"></button>
+      </div>
+      <label>Concepto
+        <input name="title" required maxlength="120" placeholder="Cena en el puerto">
+      </label>
+      <div class="row">
+        <label>Importe
+          <input name="amount" type="number" required min="0.01" step="0.01" inputmode="decimal" placeholder="0,00">
+        </label>
+        <label>Día
+          <input name="day" type="date" required>
+        </label>
+      </div>
+      <fieldset class="people-pick">
+        <legend>¿Quién pagó?</legend>
+        <div id="expense-payer" class="pick-row"></div>
+      </fieldset>
+      <fieldset class="people-pick">
+        <legend>¿Entre quién se reparte? <button type="button" class="link-btn" id="expense-all">Todos</button></legend>
+        <div id="expense-split" class="pick-row"></div>
+      </fieldset>
+      <div class="input-row">
+        <input id="expense-new-person" maxlength="40" placeholder="Añadir a otra persona" aria-label="Nombre de otra persona">
+        <button type="button" class="btn small" id="expense-add-person"></button>
+      </div>
+      <p class="hint" id="expense-hint" aria-live="polite"></p>
+      <div class="dialog-actions">
+        <button type="button" class="btn danger" id="expense-delete" hidden>Borrar</button>
+        <button type="button" class="btn ghost" data-close>Cancelar</button>
+        <button type="submit" class="btn primary">Guardar</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="discover-dialog">
+    <div class="dialog-head">
+      <h2>Descubrir cerca</h2>
+      <button type="button" class="icon-btn" data-close aria-label="Cerrar" data-icon="x"></button>
+    </div>
+    <p class="hint" id="discover-where"></p>
+    <div class="segmented" id="discover-kind" role="group" aria-label="Qué buscar"></div>
+    <ul id="discover-list" class="discover-list" aria-live="polite"></ul>
+    <p class="hint credits">Datos de OpenStreetMap (licencia ODbL) con Nominatim. Pueden faltar sitios o estar desactualizados.</p>
+  </dialog>
+
+  <dialog id="access-dialog">
+    <div class="dialog-head">
+      <h2>Viajeros y solicitudes</h2>
+      <button type="button" class="icon-btn" data-close aria-label="Cerrar" data-icon="x"></button>
+    </div>
+    <div id="access-body"></div>
+  </dialog>
+
   <dialog id="profile-dialog">
     <form id="profile-form">
       <div class="dialog-head">
@@ -157,6 +239,13 @@
     </div>
     <p class="hint" id="demo-hint" hidden>Estás en modo demo: lo que añadas se guarda solo en este navegador. Para compartirlo hay que conectar Supabase (ver docs/DESPLIEGUE.md).</p>
     <section>
+      <h3>Preferencias</h3>
+      <div class="action-list">
+        <button type="button" class="list-btn" id="access-btn" hidden></button>
+        <button type="button" class="list-btn" id="settings-btn"></button>
+      </div>
+    </section>
+    <section>
       <h3>En el móvil</h3>
       <div class="action-list">
         <button type="button" class="list-btn" id="install-btn" hidden></button>
@@ -171,6 +260,75 @@
     <p class="hint credits">Mapa © colaboradores de OpenStreetMap · teselas de OpenFreeMap · rutas de OSRM · búsqueda con Nominatim.</p>
   </dialog>
 
+  <dialog id="settings-dialog">
+    <div class="dialog-head">
+      <h2>Ajustes</h2>
+      <button type="button" class="icon-btn" data-close aria-label="Cerrar" data-icon="x"></button>
+    </div>
+    <section>
+      <h3>Apariencia</h3>
+      <div class="setting"><span>Tema</span>
+        <div class="segmented" data-setting="theme"><button type="button" data-value="auto">Automático</button><button type="button" data-value="light">Claro</button><button type="button" data-value="dark">Oscuro</button></div></div>
+      <div class="setting"><span>Color</span>
+        <div class="swatches" data-setting="accent" role="group" aria-label="Color de la aplicación">
+          <button type="button" data-value="ocean" style="--sw: linear-gradient(135deg,#0369a1,#0f766e)" aria-label="Océano" title="Océano"></button>
+          <button type="button" data-value="sunset" style="--sw: linear-gradient(135deg,#ea580c,#db2777)" aria-label="Atardecer" title="Atardecer"></button>
+          <button type="button" data-value="forest" style="--sw: linear-gradient(135deg,#15803d,#0f766e)" aria-label="Bosque" title="Bosque"></button>
+          <button type="button" data-value="grape" style="--sw: linear-gradient(135deg,#7c3aed,#db2777)" aria-label="Uva" title="Uva"></button>
+          <button type="button" data-value="rose" style="--sw: linear-gradient(135deg,#e11d48,#f97316)" aria-label="Rosa" title="Rosa"></button>
+        </div></div>
+      <div class="setting"><span>Animaciones</span>
+        <div class="segmented" data-setting="animations"><button type="button" data-value="auto">Las del sistema</button><button type="button" data-value="off">Desactivadas</button></div></div>
+    </section>
+    <section>
+      <h3>Unidades</h3>
+      <div class="setting"><span>Distancias</span>
+        <div class="segmented" data-setting="distance"><button type="button" data-value="km">Kilómetros</button><button type="button" data-value="mi">Millas</button></div></div>
+      <div class="setting"><span>Temperatura</span>
+        <div class="segmented" data-setting="temperature"><button type="button" data-value="c">°C</button><button type="button" data-value="f">°F</button></div></div>
+    </section>
+    <section id="live-section" hidden>
+      <h3>Ubicación en vivo</h3>
+      <label class="switch"><input type="checkbox" id="live-toggle"><span>Compartir mi ubicación con los viajeros</span></label>
+      <p class="hint">Solo la ven los viajeros autorizados y solo mientras tengas la app abierta con esto activado. Puedes dejar de compartir cuando quieras.</p>
+    </section>
+    <p class="hint credits">Estos ajustes se guardan solo en este dispositivo.</p>
+  </dialog>
+
+  <dialog id="pdf-dialog">
+    <form id="pdf-form">
+      <div class="dialog-head">
+        <h2>Descargar el álbum</h2>
+        <button type="button" class="icon-btn" data-close aria-label="Cerrar" data-icon="x"></button>
+      </div>
+      <p class="hint">Se genera en tu dispositivo con lo que hay ahora mismo en el viaje. Elige qué incluir:</p>
+      <label class="switch"><input type="checkbox" name="pdfMaps"><span>Mapas del recorrido y de cada día</span></label>
+      <label class="switch"><input type="checkbox" name="pdfComments"><span>Comentarios</span></label>
+      <label class="switch"><input type="checkbox" name="pdfWiki"><span>Curiosidades de los alrededores (Wikipedia)</span></label>
+      <label class="switch"><input type="checkbox" name="pdfAppendix"><span>Anexos con lugares y coordenadas</span></label>
+      <label>Calidad de las fotos
+        <select name="pdfQuality"><option value="small">Ligera (pesa menos)</option><option value="normal">Normal</option><option value="high">Alta (pesa más)</option></select>
+      </label>
+      <div class="dialog-actions">
+        <button type="button" class="btn ghost" data-close>Cancelar</button>
+        <button type="button" class="btn" id="pdf-share" hidden>Compartir…</button>
+        <button type="submit" class="btn primary">Descargar PDF</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="pdf-ready">
+    <div class="dialog-head">
+      <h2>Álbum listo</h2>
+      <button type="button" class="icon-btn" data-close aria-label="Cerrar" data-icon="x"></button>
+    </div>
+    <p class="hint" id="pdf-ready-info"></p>
+    <div class="dialog-actions">
+      <button type="button" class="btn" id="pdf-ready-download">Descargar</button>
+      <button type="button" class="btn primary" id="pdf-ready-share">Compartir…</button>
+    </div>
+  </dialog>
+
   <dialog id="lightbox" aria-label="Foto">
     <button type="button" class="icon-btn lightbox-close" data-close aria-label="Cerrar" data-icon="x"></button>
     <div class="lightbox-stage"><img id="lightbox-img" alt=""></div>
@@ -183,7 +341,14 @@
         </div>
         <button type="button" class="icon-btn" id="lb-next" aria-label="Siguiente" data-icon="chevronR"></button>
       </div>
+      <p id="lightbox-note" class="lb-note" hidden></p>
+      <form id="lb-caption-form" class="lb-caption-form" hidden>
+        <input name="caption" maxlength="200" placeholder="Escribe un pie de foto…" aria-label="Pie de foto" autocomplete="off">
+        <button type="submit" class="btn small primary">Guardar</button>
+        <button type="button" class="btn small" id="lb-caption-cancel">Cancelar</button>
+      </form>
       <div class="lightbox-actions">
+        <button type="button" class="btn small" id="lb-caption-btn" hidden></button>
         <button type="button" class="btn small" id="lb-map" hidden></button>
         <button type="button" class="btn small" id="lb-here" hidden></button>
         <button type="button" class="btn small" id="lb-pick" hidden></button>

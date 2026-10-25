@@ -7,6 +7,7 @@ import { getName, setName } from "./store.js";
 import { defaultDay, photoTime, photosNewestFirst } from "./trip.js";
 import { currentPosition, nearest, reversePlace, searchPlaces } from "./geo.js";
 import { EXPORTERS } from "./export.js";
+import { settings, setSetting } from "./settings.js";
 
 const activityDialog = $("#activity-dialog");
 const activityForm = $("#activity-form");
@@ -14,6 +15,9 @@ const profileDialog = $("#profile-dialog");
 const profileForm = $("#profile-form");
 const lightbox = $("#lightbox");
 const dataDialog = $("#data-dialog");
+const settingsDialog = $("#settings-dialog");
+const pdfDialog = $("#pdf-dialog");
+const pdfForm = $("#pdf-form");
 
 // ---------- perfil ----------
 
@@ -82,15 +86,16 @@ async function suggestPlaceName(lat, lng) {
   }
 }
 
-export function openActivity({ id, day, category, lat, lng } = {}) {
+export function openActivity({ id, day, category, lat, lng, title, place, notes, searchQuery } = {}) {
   if (!requireName()) return;
   const a = state.activities.find((x) => x.id === id);
   state.editingId = a?.id ?? null;
   $("#activity-title").textContent = a ? "Editar actividad" : "Nueva actividad";
   activityForm.reset();
-  fillForm({ ...(a ?? {}), day: a?.day ?? day ?? defaultDay(), category: a?.category ?? category ?? "otro", lat: a?.lat ?? lat, lng: a?.lng ?? lng });
+  fillForm({ ...(a ?? {}), day: a?.day ?? day ?? defaultDay(), category: a?.category ?? category ?? "otro", lat: a?.lat ?? lat, lng: a?.lng ?? lng, title: a?.title ?? title, place: a?.place ?? place, notes: a?.notes ?? notes });
   activityDialog.showModal();
-  if (!a && Number.isFinite(lat)) suggestPlaceName(lat, lng);
+  if (!a && Number.isFinite(lat) && !place) suggestPlaceName(lat, lng);
+  if (!a && searchQuery && !Number.isFinite(lat)) guarded(() => runSearch(searchQuery))(); // lugar compartido sin coordenadas: se busca por el nombre
 }
 
 // Sesga la búsqueda hacia donde ya hay lugares (o hacia la vista inicial del mapa).
@@ -100,8 +105,8 @@ function searchBias() {
   return { lat: located.reduce((s, a) => s + a.lat, 0) / located.length, lng: located.reduce((s, a) => s + a.lng, 0) / located.length };
 }
 
-async function runSearch() {
-  const query = activityForm.elements.place.value.trim();
+async function runSearch(override) {
+  const query = (typeof override === "string" ? override : activityForm.elements.place.value).trim();
   if (query.length < 3) return toast("Escribe al menos 3 letras del lugar.");
   const button = $("#geo-search");
   button.disabled = true;
@@ -191,6 +196,9 @@ function bindActivityDialog() {
 
 // ---------- visor de fotos ----------
 
+const captionForm = $("#lb-caption-form");
+let captionFor = null;
+
 export function showPhoto(id) {
   const photos = photosNewestFirst();
   const i = photos.findIndex((p) => p.id === id);
@@ -215,6 +223,12 @@ export function showPhoto(id) {
     ? `${icon("pin", 14)} ${near ? `Cerca de «${esc(near.title)}»` : `${photo.lat.toFixed(4)}, ${photo.lng.toFixed(4)}`}`
     : "Sin ubicación";
 
+  const note = $("#lightbox-note");
+  note.hidden = !photo.caption;
+  note.textContent = photo.caption ? `“${photo.caption}”` : "";
+  $("#lb-caption-btn").hidden = !own;
+  $("#lb-caption-btn").innerHTML = `${icon("edit", 15)} ${photo.caption ? "Editar pie" : "Añadir pie"}`;
+  if (captionForm.hidden === false && captionFor !== id) captionForm.hidden = true; // al cambiar de foto se cierra el editor
   $("#lb-prev").disabled = i === 0;
   $("#lb-next").disabled = i === photos.length - 1;
   $("#lb-open").href = photo.full_url;
@@ -245,6 +259,44 @@ function bindLightbox() {
     await ctx.store.updatePhoto(selected(), { lat: spot?.lat ?? null, lng: spot?.lng ?? null });
     await ctx.actions.refresh();
   };
+
+  // Pie de foto (solo la persona que la subió).
+  $("#lb-caption-btn").addEventListener("click", () => {
+    const photo = state.photos.find((p) => p.id === selected());
+    if (!photo) return;
+    captionFor = photo.id;
+    captionForm.elements.caption.value = photo.caption ?? "";
+    captionForm.hidden = false;
+    captionForm.elements.caption.focus();
+  });
+  $("#lb-caption-cancel").addEventListener("click", () => (captionForm.hidden = true));
+  captionForm.addEventListener(
+    "submit",
+    guarded(async (event) => {
+      event.preventDefault();
+      const caption = captionForm.elements.caption.value.trim() || null;
+      try {
+        await ctx.store.updatePhoto(captionFor, { caption });
+      } catch (err) {
+        throw schemaHint(err);
+      }
+      captionForm.hidden = true;
+      await ctx.actions.refresh();
+    }),
+  );
+  captionForm.addEventListener("keydown", (event) => event.stopPropagation()); // las flechas mueven el cursor, no la foto
+
+  // Deslizar con el dedo para pasar de foto.
+  let touch = null;
+  const stage = $(".lightbox-stage");
+  stage.addEventListener("touchstart", (event) => (touch = event.touches.length === 1 ? { x: event.touches[0].clientX, y: event.touches[0].clientY } : null), { passive: true });
+  stage.addEventListener("touchend", (event) => {
+    if (!touch) return;
+    const dx = event.changedTouches[0].clientX - touch.x;
+    const dy = event.changedTouches[0].clientY - touch.y;
+    touch = null;
+    if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.5) stepPhoto(dx < 0 ? 1 : -1);
+  });
 
   $("#lb-prev").addEventListener("click", () => stepPhoto(-1));
   $("#lb-next").addEventListener("click", () => stepPhoto(1));
@@ -290,16 +342,71 @@ function bindLightbox() {
   );
 }
 
+// ---------- ajustes y opciones del PDF ----------
+
+function syncSettings() {
+  for (const group of $$("[data-setting]")) {
+    for (const button of $$("button", group)) button.setAttribute("aria-pressed", String(String(settings[group.dataset.setting]) === button.dataset.value));
+  }
+}
+
+export function openSettings() {
+  syncSettings();
+  $("#live-section").hidden = ctx.store?.mode !== "supabase";
+  $("#live-toggle").checked = Boolean(state.sharing);
+  settingsDialog.showModal();
+}
+
+export function openPdfOptions() {
+  for (const name of ["pdfMaps", "pdfComments", "pdfWiki", "pdfAppendix"]) pdfForm.elements[name].checked = settings[name];
+  pdfForm.elements.pdfQuality.value = settings.pdfQuality;
+  const canShareFiles = typeof navigator.canShare === "function" && navigator.canShare({ files: [new File(["x"], "album.pdf", { type: "application/pdf" })] });
+  $("#pdf-share").hidden = !canShareFiles;
+  pdfDialog.showModal();
+}
+
+function bindSettings() {
+  $("#settings-btn").innerHTML = `<span class="list-ico">${icon("layers", 20)}</span><span class="list-text"><strong>Ajustes</strong><small>Tema, unidades (km o millas, °C o °F), animaciones, ubicación en vivo</small></span>`;
+  $("#settings-btn").addEventListener("click", () => {
+    dataDialog.close();
+    openSettings();
+  });
+  settingsDialog.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-setting] button");
+    if (!button) return;
+    setSetting(button.closest("[data-setting]").dataset.setting, button.dataset.value);
+    syncSettings();
+  });
+
+  const run = (share) =>
+    guarded(async () => {
+      for (const name of ["pdfMaps", "pdfComments", "pdfWiki", "pdfAppendix"]) setSetting(name, pdfForm.elements[name].checked);
+      setSetting("pdfQuality", pdfForm.elements.pdfQuality.value);
+      pdfDialog.close();
+      await ctx.actions.exportPdf({ share });
+    });
+  pdfForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    run(false)();
+  });
+  $("#pdf-share").addEventListener("click", run(true));
+}
+
 // ---------- datos y móvil ----------
 
 export function openData() {
   $("#demo-hint").hidden = ctx.store?.mode !== "demo";
+  const pending = state.requests.filter((r) => r.status === "pending").length;
+  $("#access-btn").hidden = !state.isAdmin;
+  $("#access-btn").innerHTML = `<span class="list-ico">${icon("share", 20)}</span><span class="list-text"><strong>Viajeros y solicitudes${pending ? ` · ${pending} pendiente${pending === 1 ? "" : "s"}` : ""}</strong><small>Aprobar a quien pide acceso, añadir o quitar viajeros</small></span>`;
   dataDialog.showModal();
 }
 
 const EXPORT_ITEMS = [
-  ["json", "file", "Copia completa", "Actividades, comentarios y datos de fotos (JSON)"],
+  ["pdf", "book", "Álbum del viaje", "PDF con mapas, fotos, gastos, comidas y comentarios"],
+  ["json", "file", "Copia completa", "Actividades, comentarios, gastos, maleta y datos de fotos (JSON)"],
   ["csv", "file", "Actividades en hoja de cálculo", "CSV para Excel, Numbers o Google Sheets"],
+  ["gastos", "wallet", "Gastos repartidos", "CSV con quién pagó cada gasto y entre quién se reparte"],
   ["gpx", "route", "Ruta y lugares", "GPX para apps de navegación y Google Earth"],
   ["geojson", "map", "Mapa", "GeoJSON con lugares, fotos y rutas (QGIS, etc.)"],
   ["ics", "calendarPlus", "Calendario del móvil", "ICS: añade el itinerario a tu calendario"],
@@ -316,8 +423,14 @@ function bindDataDialog() {
     guarded(async (event) => {
       const kind = event.target.closest("[data-export]")?.dataset.export;
       if (!kind) return;
+      if (kind === "pdf") {
+        dataDialog.close();
+        return openPdfOptions();
+      }
+      // El PDF y el ZIP tardan: se cierra el panel para ver el progreso, que se muestra encima de la página.
+      if (kind === "zip" || kind === "pdf") dataDialog.close();
       await EXPORTERS[kind]();
-      if (kind !== "zip") toast("Archivo descargado");
+      if (kind !== "zip" && kind !== "pdf") toast("Archivo descargado");
     }),
   );
 
@@ -386,6 +499,7 @@ export function initDialogs() {
       }
       profileDialog.close();
       ctx.actions.render();
+      ctx.actions.resumeSharedPlace?.();
     }),
   );
   $("#signout-btn").addEventListener(
@@ -401,4 +515,5 @@ export function initDialogs() {
   bindActivityDialog();
   bindLightbox();
   bindDataDialog();
+  bindSettings();
 }

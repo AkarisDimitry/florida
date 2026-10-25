@@ -1,6 +1,6 @@
 // Datos derivados del estado: días, paradas con ubicación, rutas y fotos ordenadas.
 import { config } from "./config.js";
-import { state } from "./state.js";
+import { state, ctx } from "./state.js";
 import { hasCoords, utc, dayColor, groupBy, todayIso } from "./util.js";
 import { distanceKm, pathKm, cachedRoute, fetchRoadRoute } from "./geo.js";
 
@@ -84,6 +84,27 @@ export function currentRoutes() {
     const coords = item.points.map((p) => [p.lng, p.lat]);
     return { ...item, coords, km: pathKm(coords), min: null, road: false };
   });
+}
+
+// Dónde consultar el tiempo y la ciudad de cada día: la primera parada con ubicación de ese día;
+// los días sin ubicación heredan la del día anterior (o la primera del viaje).
+export function dayTargets() {
+  const days = allDays();
+  const stops = locatedStops(days);
+  if (!stops.length) return [];
+  const firstOfDay = new Map();
+  for (const s of stops) if (!firstOfDay.has(s.day)) firstOfDay.set(s.day, s);
+  let last = stops[0];
+  return days.map((day) => {
+    last = firstOfDay.get(day) ?? last;
+    return { day, lat: last.lat, lng: last.lng };
+  });
+}
+
+// Viajeros que comparten su ubicación ahora mismo (sin contarme a mí y sin posiciones de hace más de 20 min).
+export function friendsNow() {
+  const me = ctx.store?.user?.id;
+  return state.live.filter((r) => r.user_id !== me && Date.now() - Date.parse(r.updated_at) < 20 * 60_000);
 }
 
 export const totalCost = () => state.activities.reduce((sum, a) => sum + (a.cost || 0), 0);

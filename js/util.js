@@ -1,4 +1,5 @@
 import { config } from "./config.js";
+import { settings } from "./settings.js";
 
 export const $ = (selector, root = document) => root.querySelector(selector);
 export const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -13,7 +14,7 @@ export const todayIso = () => {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 };
 export const hasCoords = (o) => o != null && Number.isFinite(o.lat) && Number.isFinite(o.lng);
-export const reducedMotion = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
+export const reducedMotion = () => settings.animations === "off" || matchMedia("(prefers-reduced-motion: reduce)").matches;
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export function groupBy(items, key) {
@@ -45,9 +46,20 @@ export const fmtDayShort = new Intl.DateTimeFormat("es", { weekday: "short", day
 export const fmtDate = new Intl.DateTimeFormat("es", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
 export const fmtStamp = new Intl.DateTimeFormat("es", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
 export const fmtStampWallClock = new Intl.DateTimeFormat("es", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", timeZone: "UTC" });
+// Formatea una fecha tolerando valores vacíos o mal formados (devuelve "" en vez de lanzar un error).
+export function safeFormat(formatter, value) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "" : formatter.format(date);
+}
 export const money = new Intl.NumberFormat("es", { style: "currency", currency: config.trip.currency || "EUR" });
 
-export const formatKm = (km) => (km >= 100 ? `${Math.round(km)} km` : `${km.toFixed(1).replace(".", ",")} km`);
+// Distancias y temperaturas según los ajustes de cada persona (km o millas, °C o °F).
+export const formatKm = (km) => {
+  const miles = settings.distance === "mi";
+  const value = miles ? km * 0.621371 : km;
+  return `${value >= 100 ? Math.round(value) : value.toFixed(1).replace(".", ",")} ${miles ? "mi" : "km"}`;
+};
+export const formatTemp = (celsius) => (settings.temperature === "f" ? `${Math.round((celsius * 9) / 5 + 32)}°F` : `${Math.round(celsius)}°`);
 export const formatDuration = (minutes) => {
   const total = Math.round(minutes);
   const h = Math.floor(total / 60);
@@ -70,6 +82,13 @@ export function toast(message, ms = 5000) {
   }, ms);
 }
 
+export function hideToast() {
+  clearTimeout(toast.timer);
+  const el = $("#toast");
+  el.classList.remove("show");
+  el.hidden = true;
+}
+
 export function guarded(fn) {
   return async (...args) => {
     try {
@@ -84,6 +103,13 @@ export function guarded(fn) {
 // Si la base de datos aún no tiene las columnas nuevas, el error de Supabase es críptico: lo explicamos.
 export function schemaHint(err) {
   const message = err?.message || String(err);
+  // Solo cuando falta la tabla o la columna (o el permiso); un CHECK que falla también nombra "expenses" y no es esto.
+  if (/schema cache|does not exist|permission denied|could not find the table/i.test(message) && /expenses|checklist_items|caption/i.test(message)) {
+    return new Error("Falta ejecutar supabase/extras.sql en Supabase (gastos, maleta y pies de foto).");
+  }
+  if (/schema cache|does not exist|could not find the function/i.test(message) && /request_access|approve_access|deny_access|add_member|remove_member|list_members|access_requests|is_admin/i.test(message)) {
+    return new Error("Falta ejecutar supabase/acceso.sql en Supabase (solicitudes de acceso y administradores).");
+  }
   if (/column|schema cache/i.test(message) && /lat|lng|rating|taken_at/i.test(message)) {
     return new Error("Falta ejecutar supabase/mapa.sql en Supabase (columnas nuevas de ubicación y valoración).");
   }

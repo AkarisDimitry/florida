@@ -79,6 +79,7 @@ export function createMap({ container, onStop, onPhoto, onLongPress }) {
   let data = { stops: [], photos: [], routes: [], layers: { stops: true, routes: true, photos: true }, activeDay: null, selected: null, selectedPhoto: null };
   const stopPins = new Map(); // id -> { marker, el, sig }
   const photoPins = new Map(); // id de la foto representante -> { marker, el, group }
+  const friendPins = new Map(); // id del viajero -> { marker, el }
   let animToken = 0;
   let animHide = null; // día cuya ruta se oculta mientras se dibuja con animación
   let runner = null;
@@ -193,6 +194,7 @@ export function createMap({ container, onStop, onPhoto, onLongPress }) {
     applyRoutes();
     syncStopPins();
     renderPhotoPins();
+    syncFriendPins();
   }
 
   function applyRoutes() {
@@ -251,6 +253,38 @@ export function createMap({ container, onStop, onPhoto, onLongPress }) {
       pin.el.classList.toggle("is-dim", Boolean(data.activeDay) && stop.day !== data.activeDay);
       pin.el.classList.toggle("is-active", stop.id === data.selected);
       i++;
+    }
+  }
+
+  // Viajeros que comparten su ubicación: círculo con su inicial y cuánto hace de la última posición.
+  const ago = (iso) => {
+    const min = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 60000));
+    return min < 1 ? "ahora" : `hace ${min} min`;
+  };
+  const hue = (text) => [...text].reduce((h, c) => (h * 31 + c.charCodeAt(0)) % 360, 7);
+
+  function syncFriendPins() {
+    const want = new Map((data.layers.friends === false ? [] : data.friends ?? []).map((f) => [f.user_id, f]));
+    for (const [id, pin] of friendPins) {
+      if (!want.has(id)) {
+        pin.marker.remove();
+        friendPins.delete(id);
+      }
+    }
+    for (const friend of want.values()) {
+      let pin = friendPins.get(friend.user_id);
+      if (!pin) {
+        const el = document.createElement("div");
+        el.className = "friend";
+        el.innerHTML = `<span class="friend-dot"></span><span class="friend-tag"></span>`;
+        pin = { el, marker: new (ML().Marker)({ element: el, anchor: "top", offset: [0, -18] }).setLngLat([friend.lng, friend.lat]).addTo(map) };
+        friendPins.set(friend.user_id, pin);
+      }
+      const name = friend.name || "Viajero";
+      pin.el.style.setProperty("--h", hue(name));
+      pin.el.querySelector(".friend-dot").textContent = name.charAt(0).toUpperCase();
+      pin.el.querySelector(".friend-tag").textContent = `${name} · ${ago(friend.updated_at)}`;
+      pin.marker.setLngLat([friend.lng, friend.lat]);
     }
   }
 
@@ -503,14 +537,15 @@ export function createMap({ container, onStop, onPhoto, onLongPress }) {
 
   // ---------- mi ubicación ----------
 
-  function locate({ onError } = {}) {
+  function locate({ onError, onPosition } = {}) {
     if (!map || watchId != null) return;
     if (!navigator.geolocation) return onError?.(new Error("Este navegador no puede obtener la ubicación."));
     let first = true;
     watchId = navigator.geolocation.watchPosition(
       (pos) => {
         const lngLat = [pos.coords.longitude, pos.coords.latitude];
-        lastMe = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+        lastMe = { lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy };
+        onPosition?.(lastMe);
         if (!meMarker) {
           const el = document.createElement("div");
           el.className = "me";
@@ -523,10 +558,12 @@ export function createMap({ container, onStop, onPhoto, onLongPress }) {
         }
       },
       (err) => {
+        // Si te quedas quieto o pierdes señal un rato el navegador avisa con un "tiempo agotado": no es un fallo grave.
+        if (err.code !== 1) return console.warn("Mi ubicación:", err.message);
         stopLocate();
         onError?.(new Error(geolocationMessage(err)));
       },
-      { enableHighAccuracy: true, maximumAge: 5000, timeout: 20000 },
+      { enableHighAccuracy: true, maximumAge: 5000 },
     );
   }
 
@@ -554,6 +591,10 @@ export function createMap({ container, onStop, onPhoto, onLongPress }) {
     isLocating: () => watchId != null,
     isPlaying: () => playing,
     myPosition: () => lastMe,
+    center: () => {
+      const c = map?.getCenter();
+      return c ? { lat: c.lat, lng: c.lng } : null;
+    },
     error: () => failure,
     ready: () => Boolean(map),
   };

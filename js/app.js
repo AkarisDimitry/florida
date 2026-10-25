@@ -1,19 +1,31 @@
-import { state, ctx, VIEWS, hashOf, viewOfHash, persist } from "./state.js";
-import { createStore } from "./store.js";
+import { state, ctx, VIEWS, hashOf, viewOfHash, planTabOfHash, persist } from "./state.js";
+import { createStore, getName } from "./store.js";
 import { createMap } from "./map.js";
 import { prepareImage } from "./images.js";
 import { icon } from "./icons.js";
 import { $, $$, esc, guarded, toast, hasCoords, reducedMotion, schemaHint, utc, capitalize, fmtDayShort } from "./util.js";
-import { allDays, locatedStops, stopsOfDay, currentRoutes, onRoutesChange, photosNewestFirst } from "./trip.js";
+import { allDays, locatedStops, stopsOfDay, currentRoutes, onRoutesChange, photosNewestFirst, dayTargets, friendsNow } from "./trip.js";
+import { loadWeather } from "./weather.js";
+import { startSharing, stopSharing } from "./live.js";
+import { cityName } from "./places.js";
+import { currentPosition } from "./geo.js";
+import { settings, onSettingChange } from "./settings.js";
 import { renderHeader, renderPlan, renderPhotos, renderFood, renderChips, renderSheet, gate, enterButton } from "./views.js";
-import { initDialogs, openActivity, openProfile, requireName, showPhoto, refreshLightbox } from "./dialogs.js";
+import { initDialogs, openActivity, openProfile, openPdfOptions, requireName, showPhoto, refreshLightbox } from "./dialogs.js";
+import { initExpenseDialog, openExpense } from "./expensedialog.js";
+import { ledgerText, TYPICAL_ITEMS } from "./extras.js";
+import { canonical } from "./ledger.js";
+import { dayPlanText, parseSharedPlace } from "./share.js";
+import { initDiscover, openDiscover } from "./discover.js";
+import { initAccess, openAccess, refreshAccess } from "./accessdialog.js";
+import { renderAlbum, hydrateAlbum, stopHydrating } from "./albumview.js";
 
 const main = $("#main");
 const mapView = $("#map-view");
 const SNAPSHOT_KEY = "viaje.copia";
 
 const darkQuery = matchMedia("(prefers-color-scheme: dark)");
-const theme = () => (darkQuery.matches ? "dark" : "light");
+const theme = () => (settings.theme === "auto" ? (darkQuery.matches ? "dark" : "light") : settings.theme);
 const dayLabel = (day) => capitalize(fmtDayShort.format(utc(day)));
 
 // ---------- datos ----------
@@ -30,7 +42,7 @@ function readSnapshot() {
 // fotos caducan, así que no se guardan).
 function saveSnapshot() {
   const photos = state.photos.map(({ full_url, thumb_url, ...meta }) => meta);
-  persist(SNAPSHOT_KEY, { activities: state.activities, comments: state.comments, photos, member: true });
+  persist(SNAPSHOT_KEY, { activities: state.activities, comments: state.comments, photos, expenses: state.expenses, checklist: state.checklist, member: true });
 }
 
 const isNetworkError = (err) => err instanceof TypeError || /fetch|network|failed to/i.test(err?.message || "");
@@ -39,7 +51,7 @@ async function refresh() {
   const supabase = ctx.store.mode === "supabase";
   try {
     if (supabase && !ctx.store.user) {
-      Object.assign(state, { activities: [], comments: [], photos: [], member: true, offline: false });
+      Object.assign(state, { activities: [], comments: [], photos: [], expenses: [], checklist: [], isAdmin: false, requests: [], myRequest: null, member: true, offline: false });
       localStorage.removeItem(SNAPSHOT_KEY);
     } else {
       Object.assign(state, await ctx.store.load(), { offline: false });
@@ -54,6 +66,7 @@ async function refresh() {
     }
   }
   render();
+  refreshEnvironment();
 }
 
 let refreshTimer;
@@ -69,10 +82,19 @@ function gateHtml() {
     return gate("Web privada", "Entra con tu correo para ver el viaje. Te enviaremos un enlace de acceso.", enterButton);
   }
   if (!state.member) {
-    return gate(
-      "Aún no tienes acceso",
-      `Has entrado como <strong>${esc(ctx.store.user.email)}</strong>, pero ese correo no figura en la lista de viajeros. Pide a quien organiza el viaje que lo añada.`,
-    );
+    const r = state.myRequest;
+    let text = `Has entrado como <strong>${esc(ctx.store.user.email)}</strong>, pero ese correo aún no está en la lista de viajeros.`;
+    let button = "";
+    if (!state.access) text += " Pide a quien organiza el viaje que te añada.";
+    else if (r?.status === "pending") {
+      text += " Tu solicitud de acceso está <strong>pendiente</strong>: quien organiza el viaje tiene que aprobarla. Cuando lo haga, pulsa «Comprobar de nuevo».";
+      button = `<button class="btn primary" data-action="recheck-access">Comprobar de nuevo</button>`;
+    } else if (r?.status === "denied") text += " Tu solicitud de acceso fue rechazada. Si crees que es un error, habla con quien organiza el viaje.";
+    else {
+      text += " Puedes pedir acceso: quien organiza el viaje lo recibirá y podrá aprobarlo.";
+      button = `<button class="btn primary" data-action="request-access">Pedir acceso</button>`;
+    }
+    return gate("Aún no tienes acceso", text, button);
   }
   return "";
 }
@@ -106,9 +128,26 @@ function render() {
   } else {
     // Un refresco remoto no debe quitarle el foco a quien está escribiendo un comentario.
     const typingId = document.activeElement?.closest?.(".comment-form")?.dataset.activity;
-    main.innerHTML = gated || { plan: renderPlan, photos: renderPhotos, food: renderFood }[view]();
+    const typingPack = Boolean(document.activeElement?.matches?.(".pack-form input[name=text]"));
+    let html = gated;
+    try {
+      html ||= { plan: renderPlan, photos: renderPhotos, food: renderFood, album: renderAlbum }[view]();
+    } catch (err) {
+      // Un dato raro no debe dejar la sección en blanco.
+      console.error(err);
+      html = gate("No se pudo mostrar esta sección", esc(err.message || String(err)));
+    }
+    main.innerHTML = html;
+    if (view === "plan") applyPlanFilter();
+    if (view === "album") hydrateAlbum(main);
+    else stopHydrating();
     if (typingId) {
       const input = main.querySelector(`.comment-form[data-activity="${CSS.escape(typingId)}"] input`);
+      input?.focus();
+      input?.setSelectionRange(input.value.length, input.value.length);
+    }
+    if (typingPack) {
+      const input = main.querySelector(".pack-form input[name=text]");
       input?.focus();
       input?.setSelectionRange(input.value.length, input.value.length);
     }
@@ -121,6 +160,58 @@ function render() {
   mapWasVisible = showMap;
   renderedView = view;
   refreshLightbox();
+  refreshAccess();
+}
+
+// ---------- datos automáticos: tiempo y ciudad de cada día ----------
+
+let environmentKey = "";
+async function refreshEnvironment() {
+  const targets = dayTargets();
+  const key = JSON.stringify(targets.map((t) => [t.day, t.lat.toFixed(1), t.lng.toFixed(1)]));
+  if (key === environmentKey) return;
+  environmentKey = key;
+  if (!targets.length) {
+    Object.assign(state, { weather: new Map(), places: {} });
+    return;
+  }
+  try {
+    state.weather = await loadWeather(targets);
+    render();
+    // Las ciudades van de una en una (Nominatim pide ir despacio) y se guardan en el navegador.
+    for (const t of targets) {
+      if (key !== environmentKey) return; // los datos cambiaron mientras tanto
+      const name = await cityName(t.lat, t.lng).catch(() => null);
+      if (name && state.places[t.day] !== name) {
+        state.places[t.day] = name;
+        if (state.view !== "map") render();
+      }
+    }
+    render();
+  } catch (err) {
+    console.warn("Datos automáticos no disponibles:", err.message || err);
+    environmentKey = ""; // se reintenta en el próximo refresco
+  }
+}
+
+// Filtro del itinerario: oculta tarjetas y días sin repintar (así no se pierde el foco al escribir).
+function applyPlanFilter() {
+  const q = state.filter.q.trim().toLowerCase();
+  const cat = state.filter.cat;
+  const filtering = Boolean(q || cat);
+  let shown = 0;
+  for (const section of main.querySelectorAll(".day")) {
+    let any = false;
+    for (const card of section.querySelectorAll(".card")) {
+      const match = (!cat || card.dataset.cat === cat) && (!q || card.dataset.search.includes(q));
+      card.hidden = !match;
+      any ||= match;
+      if (match) shown++;
+    }
+    section.hidden = filtering && !any;
+  }
+  const none = main.querySelector(".filter-empty");
+  if (none) none.hidden = !filtering || shown > 0;
 }
 
 // ---------- mapa ----------
@@ -134,6 +225,7 @@ function pushMapData() {
     stops: locatedStops(),
     photos: mapPhotos(),
     routes: currentRoutes(),
+    friends: friendsNow(),
     layers: state.layers,
     activeDay: state.day,
     selected: state.selectedStop,
@@ -174,6 +266,8 @@ function renderMapView(becameVisible) {
 
 function syncMapControls() {
   for (const input of $$("[data-layer]")) input.checked = state.layers[input.dataset.layer];
+  $("#live-switch-row").hidden = ctx.store?.mode !== "supabase";
+  $("#live-switch").checked = state.sharing;
   for (const button of $$("[data-road]")) button.setAttribute("aria-pressed", String(button.dataset.road === String(state.roadMode)));
   const playing = ctx.map.isPlaying();
   $("#fab-play").innerHTML = icon(playing ? "pause" : "play", 22);
@@ -236,11 +330,14 @@ async function togglePlay() {
   await started;
 }
 
-function setView(view) {
-  if (view === state.view) return;
+function setView(view, planTab = "days") {
+  const tab = view === "plan" ? planTab : "days";
+  if (view === state.view && tab === state.planTab) return;
   state.view = view;
-  history.replaceState(null, "", `${location.pathname}${location.search}${hashOf(view)}`);
+  state.planTab = tab;
+  history.replaceState(null, "", `${location.pathname}${location.search}${hashOf(view, tab)}`);
   window.scrollTo(0, 0);
+  navigator.vibrate?.(8);
   render();
 }
 
@@ -312,10 +409,110 @@ const actions = {
     const coords = mapPhotos().map((p) => [p.lng, p.lat]);
     if (coords.length) ctx.map.fit(coords, { maxZoom: 14 });
   },
+  "album-pdf": () => openPdfOptions(),
+  "go-album": () => setView("album"),
+  "locate-me": async () => {
+    const pos = await currentPosition();
+    state.me = { lat: pos.lat, lng: pos.lng };
+    render();
+  },
+  "filter-cat": ({ cat }) => {
+    state.filter.cat = cat || "";
+    for (const chip of main.querySelectorAll(".chip-filter")) chip.classList.toggle("is-on", (chip.dataset.cat || "") === state.filter.cat);
+    applyPlanFilter();
+  },
+  "fit-friends": () => {
+    const coords = [...friendsNow().map((f) => [f.lng, f.lat]), ...(state.me ? [[state.me.lng, state.me.lat]] : [])];
+    if (coords.length) ctx.map.fit(coords, { maxZoom: 14 });
+  },
   "select-day": ({ day }) => selectDay(day),
   "select-stop": ({ id }) => selectStop(id),
   "cancel-pick": () => ctx.map.cancelPick(),
+
+  "request-access": async () => {
+    if (!requireName()) return;
+    try {
+      await ctx.store.requestAccess(getName());
+    } catch (err) {
+      throw schemaHint(err);
+    }
+    toast("Solicitud enviada: quien organiza el viaje la verá en la web.", 6000);
+    await refresh();
+  },
+  "recheck-access": async () => {
+    await refresh();
+    if (!state.member) toast("Todavía pendiente de aprobación.", 3500);
+  },
+  "open-access": () => openAccess(),
+  "plan-tab": ({ tab }) => setView("plan", tab),
+  "go-expenses": () => setView("plan", "expenses"),
+  "go-map": () => setView("map"),
+  "add-expense": () => openExpense(),
+  "edit-expense": ({ id }) => openExpense({ id }),
+  "split-activity": ({ id }) => openExpense({ fromActivity: id }),
+  "share-ledger": () => shareText(ledgerText(), "Cuentas del viaje"),
+  "share-day": ({ day }) => shareText(dayPlanText(day), "Plan del día"),
+  "toggle-pack": async ({ id }) => {
+    const item = state.checklist.find((i) => i.id === id);
+    if (!item || !requireName()) return;
+    navigator.vibrate?.(10);
+    await ctx.store.saveChecklistItem({ id, done: !item.done, done_by_name: item.done ? null : getName() });
+    await refresh();
+  },
+  "delete-pack": async ({ id }) => {
+    await ctx.store.deleteChecklistItem(id);
+    await refresh();
+  },
+  "add-pack": async ({ text }) => {
+    if (!requireName()) return;
+    await addPackItems([text]);
+  },
+  "add-typical-pack": async () => {
+    if (!requireName()) return;
+    await addPackItems(TYPICAL_ITEMS);
+  },
 };
+
+let packBusy = false; // un segundo toque mientras se guarda no debe repetir los elementos
+async function addPackItems(texts, assigned_to = null) {
+  if (packBusy) return 0;
+  packBusy = true;
+  try {
+    return await addPackItemsNow(texts, assigned_to);
+  } finally {
+    packBusy = false;
+  }
+}
+
+async function addPackItemsNow(texts, assigned_to) {
+  const have = new Set(state.checklist.map((i) => i.text.trim().toLowerCase()));
+  const fresh = [...new Set(texts.map((t) => t.trim()).filter(Boolean))].filter((t) => !have.has(t.toLowerCase()));
+  try {
+    for (const text of fresh) await ctx.store.saveChecklistItem({ text, assigned_to, done: false });
+  } catch (err) {
+    throw schemaHint(err);
+  }
+  await refresh();
+  return fresh.length;
+}
+
+// En el móvil se abre la hoja de compartir; en el ordenador (donde esa hoja suele ser poco útil) se copia el texto.
+async function shareText(text, title) {
+  if (navigator.share && matchMedia("(pointer: coarse)").matches) {
+    try {
+      await navigator.share({ title, text });
+      return;
+    } catch (err) {
+      if (err.name === "AbortError") return;
+    }
+  }
+  try {
+    await navigator.clipboard.writeText(text);
+    toast("Copiado: ya puedes pegarlo en el chat del grupo");
+  } catch {
+    toast("No se pudo copiar el texto.");
+  }
+}
 
 const onAction = guarded(async (event) => {
   if (event.target.closest("a[href]")) return; // los enlaces (cómo llegar, abrir) siguen su curso
@@ -324,6 +521,7 @@ const onAction = guarded(async (event) => {
   await actions[element.dataset.action]?.({ ...element.dataset });
 });
 main.addEventListener("click", onAction);
+$("#banner").addEventListener("click", onAction);
 $(".map-ui").addEventListener("click", onAction);
 $(".map-ui").addEventListener("keydown", (event) => {
   if ((event.key === "Enter" || event.key === " ") && event.target.matches(".stop-card")) {
@@ -335,6 +533,18 @@ $(".map-ui").addEventListener("keydown", (event) => {
 main.addEventListener(
   "submit",
   guarded(async (event) => {
+    const packForm = event.target.closest(".pack-form");
+    if (packForm) {
+      event.preventDefault();
+      if (!requireName()) return;
+      const text = packForm.text.value.trim();
+      if (!text) return;
+      delete state.drafts.pack;
+      delete state.drafts.packWho;
+      const who = packForm.assigned_to.value ? canonical(packForm.assigned_to.value) : null;
+      await addPackItems([text], who);
+      return;
+    }
     const form = event.target.closest(".comment-form");
     if (!form) return;
     event.preventDefault();
@@ -348,7 +558,17 @@ main.addEventListener(
     await refresh();
   }),
 );
+// La persona elegida en "quién lo lleva" también se conserva si la página se repinta (p. ej. por un cambio ajeno).
+main.addEventListener("change", (event) => {
+  if (event.target.closest(".pack-form") && event.target.name === "assigned_to") state.drafts.packWho = event.target.value;
+});
 main.addEventListener("input", (event) => {
+  if (event.target.id === "plan-search") {
+    state.filter.q = event.target.value;
+    applyPlanFilter();
+    return;
+  }
+  if (event.target.closest(".pack-form") && event.target.name === "text") state.drafts.pack = event.target.value;
   const form = event.target.closest(".comment-form");
   if (form) state.drafts[form.dataset.activity] = event.target.value;
 });
@@ -365,7 +585,7 @@ main.addEventListener(
 );
 
 // pestañas
-const TABS = { map: ["map", "Mapa"], plan: ["calendar", "Itinerario"], photos: ["camera", "Fotos"], food: ["food", "Comida"] };
+const TABS = { map: ["map", "Mapa"], plan: ["calendar", "Itinerario"], photos: ["camera", "Fotos"], food: ["food", "Comida"], album: ["book", "Álbum"] };
 for (const tab of $$(".tab")) {
   const [ico, label] = TABS[tab.dataset.view];
   tab.innerHTML = `${icon(ico, 22)}<span>${label}</span>`;
@@ -375,16 +595,19 @@ $("#data-btn").innerHTML = icon("more", 22);
 $("#fab-fit").innerHTML = icon("fit", 22);
 $("#fab-locate").innerHTML = icon("locate", 22);
 $("#fab-layers").innerHTML = icon("layers", 22);
+$("#fab-discover").innerHTML = icon("compass", 22);
 
 // controles del mapa
 $("#fab-play").addEventListener("click", guarded(togglePlay));
 $("#fab-fit").addEventListener("click", () => selectDay(null));
+$("#fab-discover").addEventListener("click", () => openDiscover());
 $("#fab-locate").addEventListener("click", () => {
   if (ctx.map.isLocating()) {
     ctx.map.stopLocate();
     toast("Ubicación desactivada", 2500);
   } else {
     ctx.map.locate({
+      onPosition: (pos) => (state.me = pos),
       onError: (err) => {
         toast(err.message);
         syncMapControls();
@@ -417,40 +640,154 @@ document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && !$("#layers-panel").hidden) $("#fab-layers").click();
 });
 
-// subida de fotos
+// subida de fotos (desde el selector o desde "Compartir" en la galería del móvil)
+async function uploadFiles(files) {
+  const failed = [];
+  let uploaded = 0;
+  let located = 0;
+  for (const [i, file] of files.entries()) {
+    toast(`Subiendo foto ${i + 1} de ${files.length}…`, 60000);
+    try {
+      const prepared = await prepareImage(file);
+      try {
+        await ctx.store.addPhoto(prepared);
+      } catch (err) {
+        throw schemaHint(err);
+      }
+      uploaded++;
+      if (hasCoords(prepared)) located++;
+      await refresh();
+    } catch (err) {
+      console.error(err);
+      failed.push(err.message || file.name);
+    }
+  }
+  if (failed.length) toast(`${failed.length} de ${files.length} sin subir: ${failed[0]}`, 8000);
+  else if (located === uploaded) toast(uploaded === 1 ? "Foto subida, con su ubicación" : `${uploaded} fotos subidas, todas con ubicación`);
+  else if (located === 0)
+    toast("Subidas, pero ninguna trae ubicación. En iPhone, al elegirlas toca «Opciones» y activa «Ubicación». También puedes colocarlas a mano: abre la foto y elige el punto en el mapa.", 11000);
+  else toast(`${uploaded} fotos subidas, ${located} con ubicación. Las demás se pueden colocar a mano desde el visor.`, 8000);
+}
+
 $("#photo-input").addEventListener(
   "change",
   guarded(async (event) => {
     const input = event.target;
     const files = [...input.files];
     input.value = "";
-    const failed = [];
-    let uploaded = 0;
-    let located = 0;
-    for (const [i, file] of files.entries()) {
-      toast(`Subiendo foto ${i + 1} de ${files.length}…`, 60000);
-      try {
-        const prepared = await prepareImage(file);
-        try {
-          await ctx.store.addPhoto(prepared);
-        } catch (err) {
-          throw schemaHint(err);
-        }
-        uploaded++;
-        if (hasCoords(prepared)) located++;
-        await refresh();
-      } catch (err) {
-        console.error(err);
-        failed.push(err.message || file.name);
-      }
-    }
-    if (failed.length) toast(`${failed.length} de ${files.length} sin subir: ${failed[0]}`, 8000);
-    else if (located === uploaded) toast(uploaded === 1 ? "Foto subida, con su ubicación" : `${uploaded} fotos subidas, todas con ubicación`);
-    else if (located === 0)
-      toast("Subidas, pero ninguna trae ubicación. En iPhone, al elegirlas toca «Opciones» y activa «Ubicación». También puedes colocarlas a mano: abre la foto y elige el punto en el mapa.", 11000);
-    else toast(`${uploaded} fotos subidas, ${located} con ubicación. Las demás se pueden colocar a mano desde el visor.`, 8000);
+    await uploadFiles(files);
   }),
 );
+
+// Fotos recibidas con "Compartir" desde la galería (Android, app instalada): las guardó el service worker.
+async function receiveSharedPhotos() {
+  if (!new URLSearchParams(location.search).has("compartido")) return;
+  history.replaceState(null, "", `${location.pathname}#fotos`);
+  const cache = await caches.open("viaje-compartido");
+  const requests = await cache.keys();
+  const files = await Promise.all(
+    requests.map(async (request) => {
+      const response = await cache.match(request);
+      const blob = await response.blob();
+      return new File([blob], decodeURIComponent(response.headers.get("X-Nombre") || "foto.jpg"), { type: blob.type });
+    }),
+  );
+  for (const request of requests) await cache.delete(request);
+  if (!files.length) return;
+  setView("photos");
+  if (ctx.store.mode === "supabase" && !ctx.store.user) return toast("Inicia sesión y vuelve a compartir las fotos.", 8000);
+  if (!getName()) return toast("Pon tu nombre en el perfil y vuelve a compartir las fotos.", 8000);
+  toast(`Recibidas ${files.length} ${files.length === 1 ? "foto" : "fotos"} desde la galería`, 2500);
+  await uploadFiles(files);
+}
+
+// Un sitio compartido desde otra app (p. ej. Google Maps → Compartir → Viaje): se propone como actividad nueva.
+async function receiveSharedPlace() {
+  const text = new URLSearchParams(location.search).get("lugar");
+  if (!text) return;
+  history.replaceState(null, "", `${location.pathname}#plan`);
+  if (ctx.store.mode === "supabase" && !ctx.store.user) return toast("Inicia sesión y vuelve a compartir el lugar.", 8000);
+  // Sin nombre en el perfil no se puede crear nada: se guarda el lugar y se retoma al poner el nombre.
+  if (!getName()) {
+    state.pendingShared = text;
+    toast("Pon tu nombre para añadir el lugar compartido.", 8000);
+    return openProfile();
+  }
+  openSharedPlace(text);
+}
+
+function openSharedPlace(text) {
+  const place = parseSharedPlace(text);
+  setView("plan");
+  openActivity({ day: state.day || undefined, ...place, searchQuery: place.query });
+}
+
+function resumeSharedPlace() {
+  const text = state.pendingShared;
+  if (!text || !getName()) return;
+  state.pendingShared = null;
+  openSharedPlace(text);
+}
+
+// ---------- ubicación en vivo ----------
+
+function syncSharingUi() {
+  $("#live-chip").hidden = !state.sharing;
+  $("#live-switch").checked = state.sharing;
+  $("#live-toggle").checked = state.sharing;
+}
+
+async function setSharing(on) {
+  if (on === state.sharing) return syncSharingUi();
+  try {
+    if (on) {
+      if (ctx.store.mode !== "supabase") toast("Compartir la ubicación necesita conectar Supabase (ver docs/DESPLIEGUE.md).");
+      else if (requireName() && confirm("Los demás viajeros verán tu posición en el mapa mientras tengas la app abierta con esto activado. ¿Compartir mi ubicación?")) {
+        startSharing({
+          onError: (err) => toast(err.message), // p. ej. no se pudo enviar una posición: se sigue intentando
+          onFatal: (err) => {
+            toast(err.message);
+            setSharing(false);
+          },
+        });
+        state.sharing = true;
+        toast("Compartiendo tu ubicación con los viajeros");
+      }
+    } else {
+      state.sharing = false;
+      await stopSharing();
+      toast("Has dejado de compartir tu ubicación", 3000);
+    }
+  } catch (err) {
+    state.sharing = false;
+    toast(err.message || "No se pudo cambiar la ubicación en vivo");
+  }
+  syncSharingUi();
+}
+
+$("#live-switch").addEventListener("change", (event) => setSharing(event.target.checked));
+$("#live-toggle").addEventListener("change", (event) => setSharing(event.target.checked));
+$("#live-chip").addEventListener("click", () => confirm("¿Dejar de compartir tu ubicación con los viajeros?") && setSharing(false));
+// Las etiquetas "hace 3 min" de los viajeros se renuevan cada medio minuto.
+setInterval(() => {
+  if (state.view === "map" && ctx.map?.ready() && friendsNow().length) pushMapData();
+}, 30_000);
+
+let pdfBusy = false;
+async function exportPdf(options) {
+  if (pdfBusy) return toast("Ya se está preparando el PDF…");
+  pdfBusy = true;
+  try {
+    await (await import("./pdf.js")).exportAlbumPdf(options);
+  } finally {
+    pdfBusy = false;
+  }
+}
+
+onSettingChange((key) => {
+  if (key === "theme") ctx.map?.setTheme(theme());
+  if (ctx.store) render();
+});
 
 // ---------- arranque ----------
 
@@ -460,13 +797,16 @@ document.addEventListener("visibilitychange", () => {
 // Enlaces como «…/#fotos» (accesos directos de la app instalada, marcadores) cambian de vista.
 window.addEventListener("hashchange", () => {
   const view = viewOfHash(location.hash);
-  if (view && ctx.store) setView(view);
+  if (view && ctx.store) setView(view, planTabOfHash(location.hash));
 });
 darkQuery.addEventListener("change", () => ctx.map?.setTheme(theme()));
 initDialogs();
+initExpenseDialog();
+initDiscover();
+initAccess();
 
 try {
-  ctx.actions = { refresh, render, pickOnMap, focusPhotoOnMap };
+  ctx.actions = { refresh, render, pickOnMap, focusPhotoOnMap, exportPdf, resumeSharedPlace };
   ctx.store = await createStore(scheduleRefresh);
   ctx.map = createMap({
     container: $("#map"),
@@ -478,12 +818,21 @@ try {
     },
   });
   onRoutesChange(render);
+  // Avisa a la red de seguridad de index.html de que esta versión de los archivos ha arrancado bien.
+  document.documentElement.dataset.appReady = "1";
+  try {
+    sessionStorage.removeItem("viaje.recargaSinCache");
+  } catch {
+    /* sin sessionStorage */
+  }
   await refresh();
+  await receiveSharedPhotos().catch((err) => console.warn("Fotos compartidas:", err.message || err));
+  await receiveSharedPlace().catch((err) => console.warn("Lugar compartido:", err.message || err));
 } catch (err) {
   console.error(err);
   $("#session-btn").hidden = true;
   main.hidden = false;
-  main.innerHTML = gate("No se pudo arrancar", esc(err.message || String(err)));
+  main.innerHTML = gate("No se pudo arrancar", `${esc(err.message || String(err))}<br><br>Si la web se acaba de actualizar, recárgala sin caché (Ctrl/Cmd + Mayús + R).`);
 }
 
 // Instalación y uso sin conexión: solo en HTTPS (en local se evita para no cachear versiones viejas).

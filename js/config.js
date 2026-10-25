@@ -24,7 +24,7 @@ export const config = {
   // La anon key es pública por diseño: la protección son las políticas RLS de supabase/schema.sql.
   // Nunca poner aquí la service_role key.
   supabase: {
-    url: "",
-    anonKey: "",
+    url: "https://fpzwtgnsewjiywczoyfx.supabase.co",
+    anonKey: "sb_publishable_kZOPev2MMba_F65RkandkQ_mB9TAAEs", // clave pública (publishable): es segura en el código
   },
 };

@@ -89,11 +89,28 @@ export async function searchPlaces(query, near) {
   });
 }
 
+// Sitios de un tipo ("restaurant", "museum", "park"…) dentro de un recuadro, con sus etiquetas de OpenStreetMap
+// (cocina, horario, web). Nominatim los devuelve por importancia: quien llama los ordena por distancia.
+export function searchCategory(term, { lat, lng, radiusKm }) {
+  const dLat = radiusKm / 111;
+  const dLng = radiusKm / (111 * Math.max(Math.cos((lat * Math.PI) / 180), 0.2));
+  return nominatim("search", { q: term, viewbox: [lng - dLng, lat + dLat, lng + dLng, lat - dLat].join(","), bounded: "1", limit: "40", extratags: "1", dedupe: "1" });
+}
+
 export async function reversePlace(lat, lng) {
   const item = await nominatim("reverse", { lat: String(lat), lon: String(lng), zoom: "18" });
   if (!item || item.error) return null;
   const parts = item.display_name.split(",").map((s) => s.trim());
   return { name: item.name || item.address?.road || parts[0], detail: parts.slice(1, 4).join(", ") };
+}
+
+// Ciudad y región de unas coordenadas ("Miami Beach, Florida"), o null.
+export async function reverseCity(lat, lng) {
+  const item = await nominatim("reverse", { lat: String(lat), lon: String(lng), zoom: "10" });
+  if (!item || item.error) return null;
+  const a = item.address ?? {};
+  const city = a.city || a.town || a.village || a.municipality || a.county || item.name;
+  return [city, a.state || a.country].filter(Boolean).join(", ") || null;
 }
 
 // ---------- OSRM ----------

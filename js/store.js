@@ -30,6 +30,8 @@ function localStore(onChange) {
   const ACT = "viaje.actividades";
   const COM = "viaje.comentarios";
   const PHO = "viaje.fotos";
+  const EXP = "viaje.gastos";
+  const PCK = "viaje.maleta";
   const read = (key) => {
     try { return JSON.parse(localStorage.getItem(key)) || []; } catch { return []; }
   };
@@ -48,9 +50,11 @@ function localStore(onChange) {
     user: { id: "local", email: null },
     async signIn() {},
     async signOut() {},
+    async shareLocation() {},
+    async stopSharing() {},
     async load() {
       const photos = read(PHO).sort((a, b) => b.created_at.localeCompare(a.created_at));
-      return { activities: read(ACT), comments: read(COM), photos, member: true };
+      return { activities: read(ACT), comments: read(COM), photos, live: [], expenses: read(EXP), checklist: read(PCK), extras: true, isAdmin: false, requests: [], myRequest: null, access: false, member: true };
     },
     async addPhoto({ full, thumb, lat = null, lng = null, taken_at = null }) {
       const photo = {
@@ -66,8 +70,28 @@ function localStore(onChange) {
       };
       write(PHO, [...read(PHO), photo]);
     },
-    async updatePhoto(id, { lat, lng }) {
-      write(PHO, read(PHO).map((p) => (p.id === id ? { ...p, lat, lng } : p)));
+    async updatePhoto(id, fields) {
+      write(PHO, read(PHO).map((p) => (p.id === id ? { ...p, ...fields } : p)));
+    },
+    async saveExpense(e) {
+      const list = read(EXP);
+      const i = list.findIndex((x) => x.id === e.id);
+      if (i >= 0) list[i] = { ...list[i], ...e, updated_at: now() };
+      else list.push({ ...e, id: crypto.randomUUID(), created_by: "local", created_by_name: getName(), created_at: now() });
+      write(EXP, list);
+    },
+    async deleteExpense(id) {
+      write(EXP, read(EXP).filter((x) => x.id !== id));
+    },
+    async saveChecklistItem(item) {
+      const list = read(PCK);
+      const i = list.findIndex((x) => x.id === item.id);
+      if (i >= 0) list[i] = { ...list[i], ...item };
+      else list.push({ done: false, assigned_to: null, done_by_name: null, ...item, id: crypto.randomUUID(), created_by: "local", created_by_name: getName(), created_at: now() });
+      write(PCK, list);
+    },
+    async deleteChecklistItem(id) {
+      write(PCK, read(PCK).filter((x) => x.id !== id));
     },
     async deletePhoto(photo) {
       write(PHO, read(PHO).filter((p) => p.id !== photo.id));
@@ -81,6 +105,7 @@ function localStore(onChange) {
     },
     async deleteActivity(id) {
       write(COM, read(COM).filter((c) => c.activity_id !== id));
+      write(EXP, read(EXP).map((e) => (e.activity_id === id ? { ...e, activity_id: null } : e)));
       write(ACT, read(ACT).filter((a) => a.id !== id));
     },
     async addComment(activity_id, body) {
@@ -118,6 +143,38 @@ async function supabaseStore(onChange) {
     return (path) => signed.get(path)?.url ?? "";
   }
 
+  // Cada tabla opcional tiene su propio canal y solo se escucha si existe: una suscripción a una tabla que falta
+  // podría hacer fallar todo el canal, y las actividades, comentarios y fotos no deben depender de ellas.
+  const available = { live: false, extras: false, access: false };
+  const lastOptional = { live_locations: [], expenses: [], checklist_items: [], access_requests: [] };
+  const subscribed = new Set();
+  function subscribeOptional() {
+    for (const [group, tables] of [["live", ["live_locations"]], ["extras", ["expenses", "checklist_items"]], ["access", ["access_requests"]]]) {
+      if (!available[group] || subscribed.has(group)) continue;
+      subscribed.add(group);
+      let channel = sb.channel(`viaje-${group}`);
+      for (const table of tables) channel = channel.on("postgres_changes", { event: "*", schema: "public", table }, onChange);
+      channel.subscribe();
+    }
+  }
+
+    // Las tablas opcionales (vivo.sql, extras.sql y acceso.sql): si faltan, la web sigue funcionando sin esa función. Solo cuenta
+    // como "falta" el error de tabla inexistente; un fallo pasajero (red, 500…) conserva lo último que se cargó.
+    const optional = (table, order) => {
+      const query = sb.from(table).select("*");
+      return (order ? query.order(order) : query).then(
+        ({ data, error }) => {
+          if (!error) {
+            lastOptional[table] = data;
+            return { data, missing: false, failed: false };
+          }
+          const missing = ["42P01", "PGRST205"].includes(error.code) || /does not exist|schema cache|could not find the table/i.test(error.message || "");
+          return { data: missing ? [] : lastOptional[table], missing, failed: !missing };
+        },
+        () => ({ data: lastOptional[table], missing: false, failed: true }),
+      );
+    };
+
   const store = {
     mode: "supabase",
     user: null,
@@ -130,15 +187,32 @@ async function supabaseStore(onChange) {
     },
     async load() {
       const member = check(await sb.rpc("is_member"));
-      if (!member) return { activities: [], comments: [], photos: [], member: false };
-      const [activities, comments, rows] = await Promise.all([
+      const none = { activities: [], comments: [], photos: [], live: [], expenses: [], checklist: [], extras: true, isAdmin: false, requests: [], myRequest: null };
+      if (!member) {
+        // Sin ser miembro solo se ve la propia solicitud de acceso (si acceso.sql está ejecutado).
+        const mine = await optional("access_requests");
+        available.access = !mine.missing && !mine.failed;
+        subscribeOptional();
+        return { ...none, member: false, access: !mine.missing, myRequest: mine.data?.[0] ?? null };
+      }
+      const [activities, comments, rows, live, expenses, checklist] = await Promise.all([
         sb.from("activities").select("*").then(check),
         sb.from("comments").select("*").order("created_at").then(check),
         sb.from("photos").select("*").order("created_at", { ascending: false }).then(check),
+        optional("live_locations"),
+        optional("expenses", "created_at"),
+        optional("checklist_items", "created_at"),
       ]);
+      // Solo los administradores consultan (y escuchan) las solicitudes de acceso.
+      const isAdmin = await sb.rpc("is_admin").then(({ data, error }) => !error && data === true, () => false);
+      const asked = isAdmin ? await optional("access_requests", "created_at") : { data: [], missing: false, failed: false };
+      available.access = isAdmin && !asked.missing && !asked.failed;
+      available.live = !live.missing && !live.failed;
+      available.extras = !expenses.missing && !expenses.failed && !checklist.missing && !checklist.failed;
+      subscribeOptional();
       const urlOf = await signUrls(rows.flatMap((p) => [p.path, p.thumb_path]));
       const photos = rows.map((p) => ({ ...p, full_url: urlOf(p.path), thumb_url: urlOf(p.thumb_path) }));
-      return { activities, comments, photos, member: true };
+      return { activities, comments, photos, live: live.data ?? [], expenses: expenses.data ?? [], checklist: checklist.data ?? [], extras: !expenses.missing && !checklist.missing, isAdmin, requests: asked.data ?? [], myRequest: null, access: isAdmin || !asked.missing, member: true };
     },
     async addPhoto({ full, thumb, lat = null, lng = null, taken_at = null }) {
       const id = crypto.randomUUID();
@@ -155,10 +229,49 @@ async function supabaseStore(onChange) {
         throw error;
       }
     },
-    async updatePhoto(id, { lat, lng }) {
-      const rows = check(await sb.from("photos").update({ lat, lng }).eq("id", id).select("id"));
+    async updatePhoto(id, fields) {
+      const rows = check(await sb.from("photos").update(fields).eq("id", id).select("id"));
       // Con RLS, un UPDATE sin permiso no da error: simplemente no toca ninguna fila.
-      if (!rows.length) throw new Error("Solo quien subió la foto puede cambiar su ubicación.");
+      if (!rows.length) throw new Error("Solo quien subió la foto puede cambiarla.");
+    },
+    async saveExpense({ id, ...fields }) {
+      if (id) check(await sb.from("expenses").update(fields).eq("id", id));
+      else check(await sb.from("expenses").insert({ ...fields, created_by_name: getName() }));
+    },
+    async deleteExpense(id) {
+      check(await sb.from("expenses").delete().eq("id", id));
+    },
+    async saveChecklistItem({ id, ...fields }) {
+      if (id) check(await sb.from("checklist_items").update(fields).eq("id", id));
+      else check(await sb.from("checklist_items").insert({ ...fields, created_by_name: getName() }));
+    },
+    async deleteChecklistItem(id) {
+      check(await sb.from("checklist_items").delete().eq("id", id));
+    },
+    // Acceso: las escribe la base de datos con funciones (solo los administradores aprueban, rechazan, añaden y quitan).
+    async requestAccess(name) {
+      return check(await sb.rpc("request_access", { p_name: name }));
+    },
+    async approveAccess(email) {
+      check(await sb.rpc("approve_access", { p_email: email }));
+    },
+    async denyAccess(email) {
+      check(await sb.rpc("deny_access", { p_email: email }));
+    },
+    async addMember(email) {
+      check(await sb.rpc("add_member", { p_email: email }));
+    },
+    async removeMember(email) {
+      check(await sb.rpc("remove_member", { p_email: email }));
+    },
+    async listMembers() {
+      return check(await sb.rpc("list_members"));
+    },
+    async shareLocation({ lat, lng, accuracy }) {
+      check(await sb.from("live_locations").upsert({ user_id: store.user.id, name: getName(), lat, lng, accuracy: accuracy ?? null }, { onConflict: "user_id" }));
+    },
+    async stopSharing() {
+      check(await sb.from("live_locations").delete().eq("user_id", store.user.id));
     },
     async deletePhoto(photo) {
       // Primero los archivos: si algo falla, la fila sigue ahí y se puede reintentar el borrado.
