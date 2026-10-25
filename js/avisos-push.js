@@ -9,7 +9,7 @@ export const ios = () => /iPhone|iPad|iPod/.test(navigator.userAgent) || (naviga
 export const standalone = () => matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
 // En iPhone el Web Push solo existe con la web instalada en la pantalla de inicio (iOS 16.4 o más).
 export const iosNeedsInstall = () => ios() && !standalone();
-export const supported = () => "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+export const supported = () => "serviceWorker" in navigator && Boolean(window.PushManager) && "Notification" in window; // Boolean: una propiedad presente pero vacía tampoco cuenta
 export const permission = () => (typeof Notification === "undefined" ? "unsupported" : Notification.permission);
 
 export const functionUrl = () => `${String(config.supabase.url || "").replace(/\/+$/, "")}/functions/v1/push`;

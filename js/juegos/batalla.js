@@ -12,6 +12,7 @@ import { prepareImage } from "../images.js";
 import { pickFiles } from "../media.js";
 import { hueOf, people } from "../ledger.js";
 import { requireName } from "../dialogs.js";
+import { starsHtml } from "../valoraciones.js";
 
 export const meta = { id: "batalla", title: "Batalla de fotos", emoji: "📸", blurb: "Un reto de foto, todos participan con la cámara y se vota la mejor." };
 
@@ -55,6 +56,8 @@ const S = {
   active: null, // la batalla sin terminar, si hay
   entries: [], // fotos de la batalla activa
   myVote: null, // id de la foto que he votado en la batalla activa
+  myRatings: new Map(), // id de foto -> mis estrellas (1-5) en la batalla activa
+  ratingsMissing: false, // faltan las notas con estrellas (no se ha ejecutado valoraciones.sql): todo lo demás sigue igual
   progress: null, // { participants, voted } de la batalla en votación
   leaderboard: [],
   results: new Map(), // id de batalla terminada -> { rows, votes }
@@ -178,6 +181,7 @@ async function load() {
     const finished = S.prevActiveId && !active ? battles.find((b) => b.id === S.prevActiveId && b.status === "done") : null;
     let entries = [];
     let myVote = null;
+    let myRatings = new Map();
     let progress = null;
     let leaderboard = S.leaderboard;
     if (active) {
@@ -190,6 +194,12 @@ async function load() {
       if (v.error) throw v.error;
       entries = e.data;
       myVote = v.data?.[0]?.entry_id ?? null;
+      if (active.status === "voting") {
+        // Mis notas con estrellas (las de los demás son secretas hasta el final). Si faltan las tablas, se sigue sin ellas.
+        const r = await sb().from("battle_ratings").select("entry_id,stars").eq("battle_id", active.id).eq("user_id", me());
+        S.ratingsMissing = Boolean(r.error);
+        if (!r.error) myRatings = new Map((r.data ?? []).map((x) => [x.entry_id, Number(x.stars)]));
+      }
       const row = Array.isArray(p.data) ? p.data[0] : p.data;
       progress = row ? { participants: Number(row.participants), voted: Number(row.voted) } : null;
     } else {
@@ -203,6 +213,7 @@ async function load() {
     S.active = active;
     S.entries = entries;
     S.myVote = myVote;
+    S.myRatings = myRatings;
     S.progress = progress;
     S.leaderboard = leaderboard;
     S.prevActiveId = active?.id ?? null;
@@ -213,7 +224,7 @@ async function load() {
     if (S.viewId && !battles.some((b) => b.id === S.viewId)) S.viewId = null;
     if (S.viewId) await loadResult(S.viewId, { silent: true });
     await sign([...entries.map((e) => e.thumb_path), ...(S.viewId ? resultPaths(S.viewId) : [])]);
-    const sig = JSON.stringify([battles.map((b) => [b.id, b.status]), entries.map((e) => e.id), myVote, progress, leaderboard, S.viewId, S.results.size]);
+    const sig = JSON.stringify([battles.map((b) => [b.id, b.status]), entries.map((e) => e.id), myVote, [...myRatings], progress, leaderboard, S.viewId, S.results.size]);
     if (!S.loaded || sig !== S.sig) {
       S.sig = sig;
       S.loaded = true;
@@ -246,10 +257,13 @@ const resultPaths = (id) => {
 async function loadResult(id, { silent = false } = {}) {
   if (S.results.has(id)) return;
   try {
-    const [r, v] = await Promise.all([sb().rpc("battle_results", { p_battle: id }), sb().from("battle_votes").select("voter_id,entry_id").eq("battle_id", id)]);
+    // battle_final trae además la nota media y desempata por estrellas; sin valoraciones.sql se usa battle_results (solo votos).
+    let r = await sb().rpc("battle_final", { p_battle: id });
+    if (r.error) r = await sb().rpc("battle_results", { p_battle: id });
+    const v = await sb().from("battle_votes").select("voter_id,entry_id").eq("battle_id", id);
     if (r.error) throw r.error;
     if (v.error) throw v.error;
-    const rows = r.data.map((x) => ({ ...x, votes: Number(x.votes), rank: Number(x.rank) }));
+    const rows = r.data.map((x) => ({ ...x, votes: Number(x.votes), rank: Number(x.rank), avg: x.avg_stars == null ? null : Number(x.avg_stars), nratings: Number(x.ratings ?? 0) }));
     S.results.set(id, { rows, votes: v.data ?? [] });
     await sign(resultPaths(id));
   } catch (err) {
@@ -507,7 +521,7 @@ function renderVoting(b) {
           <span class="bt-num">${i + 1}</span>
           ${isMine ? `<span class="bt-tag">Tu foto</span>` : voted ? `<span class="bt-tag is-ok">${icon("check", 14)} Tu voto</span>` : ""}
         </button>
-        <div class="bt-card-foot">${foot}</div>
+        <div class="bt-card-foot">${foot}${!isMine && S.myRatings.get(e.id) ? `<p class="bt-mynote">Tu nota ${starsHtml(S.myRatings.get(e.id), "", "estrellas")}</p>` : ""}</div>
       </li>`;
     })
     .join("");
@@ -518,7 +532,7 @@ function renderVoting(b) {
     : `<p class="hint bt-wait">${all ? "Han votado todos. " : ""}${esc(creatorName(b))} cerrará la votación y se verá el resultado.</p>`;
   return `${hero(b, "voting")}
     ${!mine ? `<p class="notice bt-view-only" role="note">${icon("file", 18)}<span>No enviaste foto a este reto, así que esta vez solo puedes mirar.</span></p>` : ""}
-    <p class="hint bt-hint">Las fotos son anónimas. Toca una para verla grande. Solo cuenta un voto: si cambias de idea, vota otra.</p>
+    <p class="hint bt-hint">Las fotos son anónimas. Toca una para verla grande. Solo cuenta un voto: si cambias de idea, vota otra.${mine && !S.ratingsMissing ? " Además puedes puntuar cada foto con estrellas (al ampliarla): son secretas hasta el final y desempatan si dos fotos empatan a votos." : ""}</p>
     ${status}
     ${cards ? `<ul class="bt-grid">${cards}</ul>` : `<p class="hint bt-wait">Nadie ha enviado foto, así que no hay nada que votar.</p>`}
     ${closing}`;
@@ -538,8 +552,11 @@ function renderResult(id) {
   if (!r) return `${back}${head}<p class="hint bt-loading" role="status">Cargando el resultado…</p><button type="button" class="btn bt-big" data-action="batalla-ver" data-id="${esc(id)}">Reintentar</button>`;
   const rows = r.rows;
   const top = rows.filter((x) => x.rank === 1 && x.votes > 0);
+  const star1 = (x) => (x.avg == null ? "" : ` · ★ ${x.avg.toFixed(1).replace(".", ",")}`); // nota media, si alguien la puntuó
+  const maxVotes = Math.max(0, ...rows.map((x) => x.votes));
+  const brokeTie = top.length === 1 && rows.filter((x) => x.votes === maxVotes).length > 1; // empataron a votos y desempató la nota
   const banner = top.length
-    ? `<p class="bt-winner"><span aria-hidden="true">🏆</span> <span>${top.length === 1 ? `Ganó <strong>${esc(top[0].name)}</strong>` : `Empate: <strong>${esc(top.map((x) => x.name).join(" y "))}</strong>`} con ${esc(plural(top[0].votes, "voto", "votos"))}</span></p>`
+    ? `<p class="bt-winner"><span aria-hidden="true">🏆</span> <span>${top.length === 1 ? `Ganó <strong>${esc(top[0].name)}</strong>` : `Empate: <strong>${esc(top.map((x) => x.name).join(" y "))}</strong>`} con ${esc(plural(top[0].votes, "voto", "votos"))}${brokeTie ? ` (empate a votos: ganó por la nota media${esc(star1(top[0]))})` : ""}</span></p>`
     : `<p class="bt-winner"><span aria-hidden="true">🤷</span> <span>Nadie recibió votos esta vez.</span></p>`;
   const podium = rows.filter((x) => x.rank <= 3 && x.votes > 0); // sin votos no hay medalla
   const card = (x, big) => {
@@ -548,7 +565,7 @@ function renderResult(id) {
       <button type="button" class="bt-photo" data-action="batalla-zoom" data-id="${esc(x.entry_id)}" aria-label="Ampliar la foto de ${esc(x.name)}">
         ${src ? `<img src="${esc(src)}" alt="Foto de ${esc(x.name)}" loading="lazy" decoding="async">` : `<span class="bt-ph" aria-hidden="true">${icon("images", 28)}</span>`}
       </button>
-      <p class="bt-pod-info"><span class="bt-medal" aria-label="${ordinal(x.rank)} puesto">${medal(x.rank)} ${ordinal(x.rank)}</span><strong>${esc(x.name)}</strong><small>${esc(plural(x.votes, "voto", "votos"))}</small></p>
+      <p class="bt-pod-info"><span class="bt-medal" aria-label="${ordinal(x.rank)} puesto">${medal(x.rank)} ${ordinal(x.rank)}</span><strong>${esc(x.name)}</strong><small>${esc(plural(x.votes, "voto", "votos"))}${esc(star1(x))}</small></p>
     </li>`;
   };
   const nameOf = new Map(rows.map((x) => [x.user_id, x.name]));
@@ -566,7 +583,7 @@ function renderResult(id) {
         .map(
           (x) => `<li><button type="button" class="bt-photo" data-action="batalla-zoom" data-id="${esc(x.entry_id)}" aria-label="Ampliar la foto de ${esc(x.name)}, ${esc(plural(x.votes, "voto", "votos"))}">
             ${urlOf(x.thumb_path) ? `<img src="${esc(urlOf(x.thumb_path))}" alt="Foto de ${esc(x.name)}" loading="lazy" decoding="async">` : `<span class="bt-ph" aria-hidden="true">${icon("images", 24)}</span>`}
-          </button><p class="bt-all-info"><strong>${esc(x.name)}</strong><small>${esc(plural(x.votes, "voto", "votos"))}</small></p></li>`,
+          </button><p class="bt-all-info"><strong>${esc(x.name)}</strong><small>${esc(plural(x.votes, "voto", "votos"))}${esc(star1(x))}${x.nratings ? esc(` (${x.nratings})`) : ""}</small></p></li>`,
         )
         .join("")}</ul></section>
     <section class="bt-section"><h3>Quién votó a quién</h3>
@@ -603,6 +620,7 @@ function zoomDialog() {
     if (k === "close") d.close();
     else if (k === "prev" || k === "next") stepZoom(k === "next" ? 1 : -1);
     else if (k === "vote") vote(el.dataset.id);
+    else if (k === "rate") rate(el.dataset.id, el.dataset.stars);
   });
   d.addEventListener("keydown", (event) => {
     if (event.key === "ArrowLeft") stepZoom(-1);
@@ -655,6 +673,7 @@ function refreshZoom() {
         }
         <button type="button" class="icon-btn" data-z="next" aria-label="Foto siguiente" ${items.length < 2 ? "disabled" : ""}>${icon("chevronR", 22)}</button>
       </div>
+      ${canVote && !S.ratingsMissing ? `<div class="bt-zoom-rate">${starsHtml(S.myRatings.get(it.id) ?? 0, `data-z="rate" data-id="${esc(it.id)}"`, "estrellas, tu nota")}<small>Tu nota (secreta hasta el final). Toca la misma estrella para quitarla</small></div>` : ""}
     </div>`;
 }
 
@@ -796,6 +815,29 @@ async function vote(entryId) {
   });
 }
 
+// Puntuar una foto con estrellas (1 a 5). Tocar la misma estrella quita la nota. Se ve al instante y se deshace si el servidor la rechaza.
+async function rate(entryId, stars) {
+  const b = S.active;
+  if (!b || b.status !== "voting" || !entryId) return;
+  const wanted = Number(stars);
+  const had = S.myRatings.get(entryId) ?? 0;
+  const next = had === wanted ? 0 : wanted;
+  if (next) S.myRatings.set(entryId, next);
+  else S.myRatings.delete(entryId);
+  repaint();
+  refreshZoom();
+  try {
+    await rpc("rate_battle_entry", { p_entry: entryId, p_stars: next });
+    navigator.vibrate?.(8);
+  } catch (err) {
+    if (had) S.myRatings.set(entryId, had);
+    else S.myRatings.delete(entryId);
+    repaint();
+    refreshZoom();
+    fail(err);
+  }
+}
+
 async function closeBattle() {
   const b = S.active;
   if (!b || b.status !== "voting") return;
@@ -837,6 +879,7 @@ export const actions = {
   "batalla-enviar": () => sendPhoto(),
   "batalla-votar-ya": () => startVoting(),
   "batalla-vote": ({ id }) => vote(id),
+  "batalla-rate": ({ id, stars }) => rate(id, stars),
   "batalla-cerrar": () => closeBattle(),
   "batalla-zoom": ({ id }) => {
     const mode = S.viewId ? "done" : "voting";

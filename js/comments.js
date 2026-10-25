@@ -7,11 +7,13 @@ import { esc, toast, ago, schemaHint } from "./util.js";
 import { hueOf } from "./ledger.js";
 import { prepareImage } from "./images.js";
 import { pickFiles, canRecord, startRecording, cancelAllRecordings, clock } from "./media.js";
+import { reactionBarHtml } from "./reacciones.js";
+import { emojiPanelHtml, insertAtCursor, rememberEmoji } from "./emojis.js";
 
 // Estado de cada caja de escribir (clave: "a:<id de actividad>" o "p:<id de foto>"): foto, audio, grabación y a quién responde.
 const boxes = new Map();
 const box = (key) => {
-  if (!boxes.has(key)) boxes.set(key, { photo: null, audio: null, recording: null, starting: false, seconds: 0, reply: null, busy: false });
+  if (!boxes.has(key)) boxes.set(key, { photo: null, audio: null, recording: null, starting: false, seconds: 0, reply: null, busy: false, emoji: false });
   return boxes.get(key);
 };
 const parseKey = (key) => ({ kind: key[0] === "p" ? "photo" : "activity", id: key.slice(2) });
@@ -37,6 +39,7 @@ function commentHtml(c, key, replies = []) {
       <div class="cm-meta"><small>${esc(ago(Date.parse(c.created_at) || Date.now()))}</small>
         ${!c.reply_to ? `<button type="button" class="link-btn" data-action="compose-reply" data-key="${esc(key)}" data-id="${esc(c.id)}">Responder</button>` : ""}
         ${mine ? `<button type="button" class="mini-x" title="Borrar" aria-label="Borrar el comentario" data-action="del-comment" data-id="${esc(c.id)}">✕</button>` : ""}</div>
+      ${reactionBarHtml("comment", c.id)}
       ${replies.length ? `<ul class="cm-replies">${replies.map((r) => commentHtml(r, key)).join("")}</ul>` : ""}
     </div></li>`;
 }
@@ -74,7 +77,9 @@ function composerHtml(key) {
     ${parent ? `<p class="reply-note">Respondiendo a <b>${esc(parent.created_by_name || "alguien")}</b> <button type="button" class="link-btn" data-action="compose-cancel-reply" data-key="${esc(key)}">Cancelar</button></p>` : ""}
     <input name="body" maxlength="1000" placeholder="${parent ? "Escribe tu respuesta…" : "Escribe un comentario…"}" value="${esc(draft)}" ${attach ? "" : "required"} enterkeyhint="send" autocomplete="off">
     ${previews ? `<div class="compose-previews">${previews}</div>` : ""}
+    ${b.emoji ? emojiPanelHtml(`data-action="compose-emoji-pick" data-key="${esc(key)}"`) : ""}
     <div class="compose-bar">
+      <button type="button" class="tool" data-action="compose-emoji" data-key="${esc(key)}" aria-expanded="${b.emoji}" aria-label="Emojis"><span aria-hidden="true">😀</span></button>
       ${attach ? `<button type="button" class="tool" data-action="compose-camera" data-key="${esc(key)}">${icon("camera", 17)}<span>Foto</span></button>
       <button type="button" class="tool" data-action="compose-gallery" data-key="${esc(key)}">${icon("images", 17)}<span>Galería</span></button>
       ${canRecord() ? `<button type="button" class="tool" data-action="compose-mic" data-key="${esc(key)}"><span aria-hidden="true">🎤</span><span>Audio</span></button>` : ""}` : ""}
@@ -158,6 +163,19 @@ export const commentActions = {
     await b.recording?.cancel();
     b.recording = null;
     rerender();
+  },
+  "compose-emoji": ({ key }) => {
+    const b = box(key);
+    b.emoji = !b.emoji;
+    rerender();
+  },
+  // Un emoji al texto que se está escribiendo (donde esté el cursor). No se repinta: así el texto, el cursor y el teclado se quedan como están.
+  "compose-emoji-pick": ({ key, emojiPick }) => {
+    const input = document.querySelector(`.comment-form[data-key="${CSS.escape(key)}"] input[name=body], .lb-thread .comment-form[data-key="${CSS.escape(key)}"] input[name=body]`);
+    if (!input || !emojiPick) return;
+    state.drafts[key] = insertAtCursor(input, emojiPick);
+    rememberEmoji(emojiPick);
+    input.focus();
   },
   "compose-reply": ({ key, id }) => {
     box(key).reply = id;

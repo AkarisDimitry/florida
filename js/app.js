@@ -34,6 +34,8 @@ import { currentTracks } from "./maprecorrido.js";
 import { ubicarActions } from "./ubicar.js";
 import { initChat, syncChat, enterChat, leaveChat } from "./chat.js";
 import { initUpdates } from "./actualizar.js";
+import { reaccionesActions, syncReacciones } from "./reacciones.js";
+import { valoracionesActions, syncValoraciones } from "./valoraciones.js";
 import { renderAlbum, hydrateAlbum, stopHydrating } from "./albumview.js";
 import { initCola, colaStart, colaSynced, colaActions, colaLoginNote, usable as colaUsable, enqueue as colaEnqueue, kick as colaKick, settle as colaSettle, beginBatch as colaBeginBatch, blockedReason as colaBlocked, ColaError } from "./cola.js";
 
@@ -277,6 +279,8 @@ function render({ user = false } = {}) {
   refreshAccess();
   syncGames();
   syncChat(); // chat: carga y tiempo real cuando hay sesión de viajero
+  syncReacciones(); // reacciones y estrellas: carga y tiempo real cuando hay sesión
+  syncValoraciones();
   syncEncuentro(); // punto de encuentro: banner de arriba, pin del mapa y carga de datos
 }
 
@@ -640,7 +644,7 @@ const actions = {
 
 let packBusy = false; // un segundo toque mientras se guarda no debe repetir los elementos
 Object.assign(actions, gameActions, commentActions, ideasActions, colaActions);
-Object.assign(actions, encuentroActions, categoryActions, ubicarActions);
+Object.assign(actions, encuentroActions, categoryActions, ubicarActions, reaccionesActions, valoracionesActions);
 
 async function addPackItems(texts, assigned_to = null) {
   if (packBusy) return 0;

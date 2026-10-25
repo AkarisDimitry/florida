@@ -155,3 +155,10 @@ dialog.bt-zoom[open] { display: flex; flex-direction: column; }
   .bt-card, .bt-pod { animation: rise 0.45s var(--ease) backwards; }
   .bt-card:nth-child(2n), .bt-pod:nth-child(2n) { animation-delay: 60ms; }
 }
+
+/* Estrellas de la batalla: «Tu nota» en la tarjeta (solo mostrar) y las estrellas para puntuar al ampliar la foto. */
+.bt-mynote { display: flex; align-items: center; justify-content: center; gap: 6px; margin: 6px 0 0; font-size: 0.74rem; color: var(--muted); }
+.bt-zoom-rate { display: grid; justify-items: center; gap: 2px; margin-top: 6px; }
+.bt-zoom-rate small { color: var(--muted); font-size: 0.72rem; text-align: center; }
+.bt-zoom .stars-row.is-input .star { color: #fbbf24; }
+.bt-zoom .stars-row .star:not(.is-on) { color: rgba(255, 255, 255, 0.55); }

@@ -20,6 +20,7 @@ import { renderIdeas } from "./ideas.js";
 import { totalCents, fromCents } from "./ledger.js";
 import { mergeQueued, queuedTile, colaBand, isFresh } from "./cola.js";
 import { locateHintHtml } from "./ubicar.js";
+import { ratingBadgeHtml, topRatedHtml } from "./valoraciones.js";
 
 const { trip } = config;
 
@@ -347,13 +348,14 @@ export function renderPhotos() {
             : `<button class="photo ${k === 0 && g.items.length >= 4 ? "is-featured" : ""}" style="--i:${Math.min(n++, 24)}" data-action="open-photo" data-id="${esc(p.id)}" aria-label="Abrir foto de ${esc(p.created_by_name || "un viajero")}">
             <img ${isFresh(p.id) ? 'class="loaded" ' : ""}src="${esc(k === 0 && g.items.length >= 4 ? p.full_url || p.thumb_url : p.thumb_url)}" alt="${esc(p.caption || "")}" loading="lazy" decoding="async" onload="this.classList.add('loaded')">
             ${hasCoords(p) ? `<span class="geo-badge" title="Con ubicación">${icon("pin", 13)}</span>` : ""}
+            ${ratingBadgeHtml(p.id)}
           </button>`,
         )
         .join("");
       return `<section class="photo-day"><h3>${esc(label)} <small>${g.items.length} ${g.items.length === 1 ? "foto" : "fotos"}</small></h3><div class="photo-grid">${thumbs}</div></section>`;
     })
     .join("");
-  return head + band + html;
+  return head + band + topRatedHtml() + html;
 }
 
 // ---------- dónde comimos ----------

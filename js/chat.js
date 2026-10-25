@@ -10,6 +10,8 @@ import { hueOf } from "./ledger.js";
 import { prepareImage } from "./images.js";
 import { pickFiles, canRecord, startRecording, cancelAllRecordings, clock } from "./media.js";
 import { showPhoto } from "./dialogs.js";
+import { reactionBarHtml, handleReactionClick } from "./reacciones.js";
+import { emojiPanelHtml, insertAtCursor, rememberEmoji } from "./emojis.js";
 
 const PAGE = 200; // mensajes que se cargan de golpe (y cada vez que se piden «anteriores»)
 const SEEN_KEY = "viaje.chat.visto";
@@ -352,6 +354,7 @@ function textHtml(m) {
       ${mine ? "" : `<strong class="cwho" style="--h:${hueOf(m.name)}">${esc(m.name)}</strong>`}
       ${attachmentHtml(m)}
       ${m.body ? `<p>${linkify(esc(m.body))}</p>` : ""}
+      ${m._pending || m._failed ? "" : reactionBarHtml("chat", m.id)}
       <span class="cmeta">${m._failed ? `<button type="button" class="link-btn" data-chat="retry" data-id="${esc(m.id)}">No se envió · Reintentar</button>` : m._pending ? "Enviando…" : esc(timeOf(m.created_at))}
         ${mine && !m._pending && !m._failed ? `<button type="button" class="link-btn chat-del" data-chat="delete" data-id="${esc(m.id)}" aria-label="Borrar el mensaje">Borrar</button>` : ""}</span>
     </div>
@@ -506,11 +509,13 @@ function buildUi() {
       <div class="chat-alert" id="chat-alert" hidden></div>
       <div class="chat-previews" id="chat-previews" hidden></div>
       <div class="chat-rec" id="chat-rec" hidden></div>
+      <div class="chat-emoji" id="chat-emoji" hidden></div>
       <div class="chat-tools" id="chat-tools">
         <button type="button" class="chat-tool is-alert" data-chat="alert-open" aria-expanded="false"><span aria-hidden="true">🚨</span><span>Alerta</span></button>
         <button type="button" class="chat-tool" data-chat="camera">${icon("camera", 17)}<span>Foto</span></button>
         <button type="button" class="chat-tool" data-chat="gallery">${icon("images", 17)}<span>Galería</span></button>
         ${canRecord() ? `<button type="button" class="chat-tool" data-chat="mic"><span aria-hidden="true">🎤</span><span>Audio</span></button>` : ""}
+        <button type="button" class="chat-tool" data-chat="emoji" aria-expanded="false" aria-label="Emojis"><span aria-hidden="true">😀</span></button>
       </div>
       <form class="chat-form" id="chat-form" autocomplete="off">
         <textarea id="chat-input" rows="1" maxlength="1000" placeholder="Escribe un mensaje…" enterkeyhint="send" aria-label="Mensaje"></textarea>
@@ -787,6 +792,16 @@ async function stopMic(cancel) {
 // ---------- eventos ----------
 
 async function onClick(event) {
+  if (handleReactionClick(event)) return; // «me gusta» y reacciones de los mensajes
+  const picked = event.target.closest("[data-emoji-pick]");
+  if (picked && picked.closest("#chat-emoji")) {
+    const input = q("#chat-input");
+    insertAtCursor(input, picked.dataset.emojiPick);
+    rememberEmoji(picked.dataset.emojiPick);
+    autosize();
+    input.focus();
+    return;
+  }
   const target = event.target.closest("[data-chat]");
   if (!target) return;
   const { chat, id, text } = { ...target.dataset };
@@ -805,6 +820,14 @@ async function onClick(event) {
       return paintComposer();
     case "mic":
       return startMic();
+    case "emoji": {
+      const panel = q("#chat-emoji");
+      const open = panel.hidden;
+      panel.hidden = !open;
+      panel.innerHTML = open ? emojiPanelHtml() : "";
+      target.setAttribute("aria-expanded", String(open));
+      return;
+    }
     case "rec-stop":
       return stopMic(false);
     case "rec-cancel":

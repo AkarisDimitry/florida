@@ -10,6 +10,8 @@ import { EXPORTERS } from "./export.js";
 import { settings, setSetting } from "./settings.js";
 import { threadHtml, commentsOf, cancelRecordings, withReplies, attachmentsOf, removeAttachments } from "./comments.js";
 import { resetActivityDraft, uploadActivityDraft, hasDraft, initAttach } from "./attach.js";
+import { reactionBarHtml } from "./reacciones.js";
+import { ratingBoxHtml } from "./valoraciones.js";
 
 const activityDialog = $("#activity-dialog");
 const activityForm = $("#activity-form");
@@ -274,6 +276,8 @@ export function showPhoto(id) {
   $("#lb-caption-btn").hidden = !own;
   $("#lb-caption-btn").innerHTML = `${icon("edit", 15)} ${photo.caption ? "Editar pie" : "Añadir pie"}`;
   if (captionForm.hidden === false && captionFor !== id) captionForm.hidden = true; // al cambiar de foto se cierra el editor
+  $("#lightbox-react").innerHTML = reactionBarHtml("photo", photo.id);
+  $("#lightbox-rate").innerHTML = ratingBoxHtml(photo.id);
   renderLightboxThread(photo.id);
   $("#lb-prev").disabled = i === 0;
   $("#lb-next").disabled = i === photos.length - 1;

@@ -41,7 +41,7 @@ body.typing .chat-shell { padding-bottom: 0; }
 .cbubble a { color: inherit; text-decoration: underline; }
 .cmeta { display: flex; justify-content: flex-end; align-items: center; gap: 8px; font-size: 0.68rem; opacity: 0.75; }
 .cmsg.mine .cmeta .link-btn, .cmsg.mine .cmeta { color: #fff; }
-.chat-del { min-height: 28px !important; padding: 2px 4px !important; font-size: 0.68rem !important; opacity: 0.85; }
+.chat-del { min-height: 32px !important; padding: 4px 6px !important; font-size: 0.68rem !important; opacity: 0.85; }
 .chat-photo { padding: 0; border: 0; background: none; border-radius: 12px; overflow: hidden; cursor: pointer; line-height: 0; max-width: min(240px, 100%); }
 .chat-photo img { display: block; width: 100%; max-height: 260px; object-fit: cover; }
 .chat-audio { display: flex; align-items: center; gap: 6px; }
