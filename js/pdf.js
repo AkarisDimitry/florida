@@ -415,6 +415,97 @@ class Book {
     }
   }
 
+  perPerson() {
+    const list = this.album.perPerson;
+    if (!list.length) return;
+    this.context = "Por persona";
+    this.page("");
+    this.heading("Por persona", { size: 22 });
+    this.text("Lo que ha aportado cada viajero y cómo van las cuentas.", { size: 10, color: C.muted, gap: 4 });
+    const cols = [
+      { title: "VIAJERO", x: 0, w: 46 },
+      { title: "FOTOS", x: 46, w: 16, align: "right" },
+      { title: "LUGARES", x: 62, w: 20, align: "right" },
+      { title: "COMENT.", x: 82, w: 20, align: "right" },
+      { title: "AUDIOS", x: 102, w: 18, align: "right" },
+      { title: "PAGÓ", x: 120, w: 30, align: "right" },
+      { title: "SALDO", x: 150, w: 32, align: "right" },
+    ];
+    const d = this.doc;
+    const header = () => {
+      this.need(8);
+      this.fill(C.soft);
+      d.rect(M, this.y, CW, 6, "F");
+      d.setFont("helvetica", "bold");
+      d.setFontSize(7.8);
+      this.ink(C.muted);
+      for (const col of cols) d.text(col.title, M + col.x + (col.align === "right" ? col.w - 1 : 1), this.y + 4.1, { align: col.align || "left" });
+      this.y += 7;
+    };
+    header();
+    for (const p of list) {
+      if (this.y + 6.2 > LIMIT) {
+        this.page(this.context);
+        header();
+      }
+      const sign = p.balance > 0.004 ? "+" : p.balance < -0.004 ? "-" : "";
+      const cells = [p.name, p.photos, p.places, p.comments, p.audios, money.format(p.paid), `${sign}${money.format(Math.abs(p.balance))}`];
+      d.setFont("helvetica", "normal");
+      d.setFontSize(9);
+      this.ink(C.ink);
+      cols.forEach((col, i) => d.text(d.splitTextToSize(latin(String(cells[i])), col.w - 2)[0] ?? "", M + col.x + (col.align === "right" ? col.w - 1 : 1), this.y + 4, { align: col.align || "left" }));
+      this.stroke("#e6ebf2");
+      d.line(M, this.y + 5.6, W - M, this.y + 5.6);
+      this.y += 6.2;
+    }
+  }
+
+  daySummary() {
+    const days = this.album.perDay;
+    if (!days.length) return;
+    const rows = days.map((r) => [r.number ? `Día ${r.number}` : "-", r.label, r.city || "", String(r.plans), String(r.photos), r.km ? formatKm(r.km) : "-", money.format(r.spent || 0)]);
+    const sum = (k) => days.reduce((s, r) => s + (r[k] || 0), 0);
+    rows.push(["Total", "", "", String(sum("plans")), String(sum("photos")), sum("km") ? formatKm(sum("km")) : "-", money.format(days.reduce((s, r) => s + (r.spent || 0), 0))]);
+    this.table("Día a día", "Un resumen de cada jornada: planes, fotos, kilómetros y gasto.", [
+      { title: "DÍA", x: 0, w: 16 },
+      { title: "FECHA", x: 16, w: 34 },
+      { title: "CIUDAD", x: 50, w: 52 },
+      { title: "PLANES", x: 102, w: 18, align: "right" },
+      { title: "FOTOS", x: 120, w: 16, align: "right" },
+      { title: "KM", x: 136, w: 22, align: "right" },
+      { title: "GASTO", x: 158, w: 24, align: "right" },
+    ], rows);
+  }
+
+  games() {
+    const list = this.album.games;
+    if (!list.length) return;
+    this.context = "Juegos";
+    this.page("");
+    this.heading("Juegos", { size: 22 });
+    this.text("Los retos y competiciones del viaje.", { size: 10, color: C.muted, gap: 4 });
+    for (const g of list) {
+      this.need(24);
+      const d = this.doc;
+      d.addImage(emojiPng(g.emoji), "PNG", M, this.y + 0.4, 6, 6);
+      this.y -= 0.2;
+      this.text(g.title, { x: M + 8.5, w: CW - 8.5, size: 14, style: "bold", gap: 1.5 });
+      if (g.highlights?.length) this.meta(g.highlights.map((h) => `${h.label}: ${h.value}`), { size: 9.2 });
+      for (const l of g.lines ?? []) this.text(`•  ${l}`, { size: 9.6, gap: 1 });
+      const shown = (g.images ?? []).map((u) => this.gameImages?.get(u)).filter(Boolean).slice(0, 6);
+      if (shown.length) {
+        this.need(36);
+        const bw = 40;
+        shown.forEach((img, i) => {
+          const scale = Math.min(bw / img.w, 34 / img.h);
+          d.addImage(img.data, "JPEG", M + i * (bw + 3) + (bw - img.w * scale) / 2, this.y + (34 - img.h * scale) / 2, img.w * scale, img.h * scale, undefined, "FAST");
+        });
+        this.y += 38;
+      }
+      this.y += 5;
+    }
+  }
+
   awards() {
     const list = this.album.awards;
     if (!list.length) return;
@@ -583,7 +674,14 @@ class Book {
     if (parts.length) this.meta(parts, { x: x0, w });
     if (a.notes) this.text(a.notes, { x: x0, w, size: 9.5, color: "#334155", gap: 1.2 });
     this.photoGrid(a.photos, { x: x0, w, cols: 3, boxH: 36 });
-    if (this.opts.comments) for (const c of a.comments) this.quote(c, { x: x0, w, color });
+    // Un PDF no reproduce audio: se deja constancia de las notas de voz (están en el álbum de la web).
+    for (const n of a.audios ?? []) this.text(`Nota de voz de ${n.created_by_name || "alguien"} (${Math.floor(n.seconds / 60)}:${String(n.seconds % 60).padStart(2, "0")})`, { x: x0, w, size: 8.6, style: "italic", color: C.muted, gap: 1.4 });
+    if (this.opts.comments) {
+      for (const c of a.comments) {
+        const label = c.body || (c.attached_audio ? "(nota de voz)" : c.attached_photo ? "(foto)" : "");
+        if (label) this.quote({ ...c, body: label }, { x: x0, w, color });
+      }
+    }
     const added = safeFormat(fullDate, a.created_at);
     const details = [hasCoords(a) ? coords(a) : "", added ? `añadido el ${added}` : ""].filter(Boolean).join("  ·  ");
     this.text(details, { x: x0, w, size: 7.2, color: "#8a98ad", gap: 4.5 });
@@ -713,7 +811,7 @@ class Book {
       d.setFont("helvetica", "bold");
       d.setFontSize(7.8);
       this.ink(C.muted);
-      for (const col of columns) d.text(col.title, M + col.x + 1, this.y + 4.1, { align: col.align || "left" });
+      for (const col of columns) d.text(col.title, M + col.x + 1 + (col.align === "right" ? col.w - 2 : 0), this.y + 4.1, { align: col.align || "left" });
       this.y += 7;
     };
     header();
@@ -863,6 +961,18 @@ export async function exportAlbumPdf({ share = false, onProgress = (text) => toa
     }
   }
 
+  // 3b. fotos de los juegos (ganadoras, pruebas del bingo…), pocas y pequeñas
+  const gameImages = new Map();
+  for (const g of album.games) {
+    for (const url of (g.images ?? []).slice(0, 6)) {
+      try {
+        gameImages.set(url, await loadPhoto(url, maxSide, { quality }));
+      } catch {
+        /* esa foto no sale en el PDF */
+      }
+    }
+  }
+
   // 4. portada con collage
   const coverImages = [];
   for (const photo of album.cover.slice(0, 5)) {
@@ -877,13 +987,17 @@ export async function exportAlbumPdf({ share = false, onProgress = (text) => toa
   await sleep(30); // deja respirar a la interfaz antes del trabajo pesado
 
   const book = new Book(jsPDF, album, maps, images, { opts, wiki });
+  book.gameImages = gameImages;
   book.cover(coverCanvas(coverImages));
   book.statsPage();
   book.awards();
+  book.perPerson();
+  book.daySummary();
   for (const c of album.chapters) book.chapter(c);
   book.expenses();
   book.ledger();
   book.food();
+  book.games();
   book.orphans();
   if (opts.appendix) {
     const placeRows = album.placeIndex.map((s, i) => [String(i + 1), s.dayTitle, s.start_time?.slice(0, 5) ?? "", s.title, coords(s)]);

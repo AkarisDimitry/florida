@@ -17,7 +17,8 @@ export function planNav() {
   const done = state.checklist.filter((i) => i.done).length;
   const tabs = [
     ["days", "calendar", "Días", ""],
-    ["expenses", "wallet", "Gastos", state.expenses.length ? String(state.expenses.length) : ""],
+    ["food", "food", "Comida", ""],
+    ["expenses", "wallet", "Cuentas", state.expenses.length ? String(state.expenses.length) : ""],
     ["packing", "bag", "Maleta", state.checklist.length ? `${done}/${state.checklist.length}` : ""],
   ];
   return `<nav class="subnav" aria-label="Secciones del itinerario">${tabs
@@ -31,7 +32,7 @@ export function planNav() {
 const missingExtras = () =>
   state.extras
     ? ""
-    : `<div class="notice">${icon("file", 18)}<p><strong>Falta una parte de la base de datos.</strong> Ejecuta <code>supabase/extras.sql</code> en Supabase (SQL Editor) para poder guardar gastos y la lista de la maleta. Mientras tanto no se guardará nada.</p></div>`;
+    : `<div class="notice">${icon("file", 18)}<p><strong>Falta una parte de la base de datos.</strong> Ejecuta <code>supabase/todo_en_uno.sql</code> en Supabase (SQL Editor; no hace daño repetirlo) para poder guardar gastos y la lista de la maleta. Mientras tanto no se guardará nada.</p></div>`;
 
 // ---------- gastos ----------
 
@@ -58,12 +59,12 @@ function myLine(rows) {
 }
 
 export function renderExpenses() {
-  const head = (extra = "") => `<div class="page-head"><div><h2>Gastos</h2><p class="page-sub">Quién pagó qué y cuánto debe cada uno</p></div>
-    <div class="head-actions">${extra}<button class="btn small primary" data-action="add-expense">${icon("plus", 16)} Añadir gasto</button></div></div>`;
+  const head = (extra = "") => `<div class="page-head"><div><h2>Cuentas</h2><p class="page-sub">Gastos y compras: quién pagó qué y cuánto debe cada uno</p></div>
+    <div class="head-actions">${extra}<button class="btn small primary" data-action="add-expense">${icon("plus", 16)} Gasto</button><button class="btn small primary" data-action="add-purchase"><span aria-hidden="true">🛒</span> Compra</button></div></div>`;
   if (!state.expenses.length) {
-    return `${head()}${missingExtras()}<div class="gate"><div class="gate-art">${icon("wallet", 34)}</div><h2>Todavía no hay gastos</h2>
-      <p>Apunta lo que paga cada uno (cena, gasolina, alojamiento…) y la web calcula quién le debe a quién para que todos queden en paz.</p>
-      <button class="btn primary" data-action="add-expense">${icon("plus", 18)} Añadir el primer gasto</button></div>`;
+    return `${head()}${missingExtras()}<div class="gate"><div class="gate-art">${icon("wallet", 34)}</div><h2>Todavía no hay gastos ni compras</h2>
+      <p>Apunta lo que paga cada uno (una cena, la gasolina, las compras del súper…) y la web calcula quién le debe a quién para que todos queden en paz.</p>
+      <div class="row-actions"><button class="btn primary" data-action="add-expense">${icon("plus", 18)} Añadir un gasto</button><button class="btn" data-action="add-purchase"><span aria-hidden="true">🛒</span> Añadir una compra</button></div></div>`;
   }
 
   const rows = balances();
@@ -75,7 +76,7 @@ export function renderExpenses() {
   const hero = `<section class="ledger-hero">
     <p class="eyebrow">Cuentas del viaje</p>
     <h2>${esc(eur(total))}</h2>
-    <p>${esc(plural(state.expenses.length, "gasto", "gastos"))} · ${esc(plural(everyone, "persona", "personas"))} · ${esc(eur(Math.round(total / Math.max(everyone, 1))))} por persona</p>
+    <p>${esc(plural(state.expenses.length, "movimiento", "movimientos"))} · ${esc(plural(everyone, "persona", "personas"))} · ${esc(eur(Math.round(total / Math.max(everyone, 1))))} por persona</p>
     ${myLine(rows)}
   </section>`;
 
@@ -97,8 +98,26 @@ export function renderExpenses() {
     )
     .join("");
 
+  const kindOf = (e) => e.kind || "gasto";
+  const counts = { todo: state.expenses.length, gasto: state.expenses.filter((e) => kindOf(e) === "gasto").length, compra: state.expenses.filter((e) => kindOf(e) === "compra").length };
+  const filter = counts[state.cuentas] === undefined || (state.cuentas !== "todo" && !counts[state.cuentas]) ? "todo" : state.cuentas;
+  const filters = `<div class="filter-row wrap">${[["todo", "Todo"], ["gasto", "Gastos"], ["compra", "🛒 Compras"]]
+    .map(([k, label]) => `<button type="button" class="chip-filter ${filter === k ? "is-on" : ""}" data-action="cuentas-filter" data-kind="${k}">${label} <small>${counts[k]}</small></button>`)
+    .join("")}</div>`;
+  const shown = state.expenses.filter((e) => filter === "todo" || kindOf(e) === filter);
+  // Resumen de compras: cuánto ha comprado (pagado) cada uno.
+  const buyers = new Map();
+  for (const e of state.expenses.filter((x) => kindOf(x) === "compra")) buyers.set(e.paid_by, (buyers.get(e.paid_by) ?? 0) + cents(e.amount));
+  const buyersMax = Math.max(...buyers.values(), 1);
+  const purchaseSummary =
+    filter === "compra" && buyers.size
+      ? `<section class="buyers"><h3 class="sec-title">Quién ha pagado las compras</h3>${[...buyers]
+          .sort((a, b) => b[1] - a[1])
+          .map(([name, c]) => `<div class="bar-row"><span class="bar-label">${esc(name)}</span><div class="bar"><i style="width:${Math.max(4, (c / buyersMax) * 100)}%; background:hsl(${hueOf(name)} 65% 48%)"></i></div><span class="bar-val">${esc(eur(c))}</span></div>`)
+          .join("")}</section>`
+      : "";
   const byDay = new Map();
-  for (const e of [...state.expenses].sort((a, b) => b.day.localeCompare(a.day) || b.created_at.localeCompare(a.created_at))) {
+  for (const e of [...shown].sort((a, b) => b.day.localeCompare(a.day) || b.created_at.localeCompare(a.created_at))) {
     if (!byDay.has(e.day)) byDay.set(e.day, []);
     byDay.get(e.day).push(e);
   }
@@ -109,9 +128,10 @@ export function renderExpenses() {
         .map((e) => {
           const split = [...shares(e).keys()];
           const who = split.length === everyone ? "entre todos" : `entre ${split.length}`;
+          const ticket = state.photos.some((p) => p.expense_id === e.id);
           return `<button type="button" class="exp" data-action="edit-expense" data-id="${esc(e.id)}">
             ${avatar(e.paid_by)}
-            <span class="exp-text"><strong>${esc(e.title)}</strong><small>Pagó ${esc(e.paid_by)} · ${esc(who)}${e.activity_id ? " · de una actividad" : ""}</small></span>
+            <span class="exp-text"><strong>${kindOf(e) === "compra" ? "🛒 " : ""}${esc(e.title)}</strong><small>Pagó ${esc(e.paid_by)} · ${esc(who)}${e.place ? ` · en ${esc(e.place)}` : ""}${e.activity_id ? " · de una actividad" : ""}${ticket ? " · con ticket" : ""}</small></span>
             <span class="exp-amount">${esc(money.format(Number(e.amount)))}</span>
           </button>`;
         })
@@ -125,7 +145,7 @@ export function renderExpenses() {
       <div class="ledger-side">${hero}
         <h3 class="sec-title">Para quedar en paz</h3>${settle}
         <h3 class="sec-title">Saldo de cada uno</h3><ul class="people">${person}</ul></div>
-      <div class="ledger-main"><h3 class="sec-title">Gastos</h3>${days}</div>
+      <div class="ledger-main">${filters}${purchaseSummary}<h3 class="sec-title">${filter === "compra" ? "Compras" : filter === "gasto" ? "Gastos" : "Movimientos"}</h3>${days}</div>
     </div>`;
 }
 

@@ -130,7 +130,8 @@ async function load() {
 }
 
 // Punto de partida: el lugar elegido, mi ubicación o el centro del mapa (por ese orden).
-export function openDiscover(point) {
+export function openDiscover(point, startKind) {
+  if (startKind && KINDS[startKind]) kind = startKind;
   const chosen = state.selectedStop ? locatedStops().find((s) => s.id === state.selectedStop) : null;
   origin = point ?? (chosen && { lat: chosen.lat, lng: chosen.lng, label: chosen.title }) ?? (state.me && { ...state.me, label: "tu ubicación" }) ?? (ctx.map?.ready() && ctx.map.center() && { ...ctx.map.center(), label: "el centro del mapa" });
   if (!origin) return toast("Elige un lugar o mueve el mapa para buscar cerca.");

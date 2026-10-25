@@ -1,0 +1,17 @@
+/* ============ pestaña Juegos: lista y cabecera común ============ */
+.game-grid { display: grid; gap: 12px; margin-top: 4px; }
+.game-card {
+  position: relative; display: flex; align-items: center; gap: 14px; width: 100%; padding: 16px; text-align: left; cursor: pointer;
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow-sm);
+  transition: transform 0.3s var(--spring), box-shadow 0.2s;
+}
+.game-card:active { transform: scale(0.98); }
+@media (hover: hover) { .game-card:hover { transform: translateY(-2px); box-shadow: var(--shadow); } }
+.game-emoji { flex: none; width: 56px; height: 56px; display: grid; place-items: center; font-size: 1.9rem; border-radius: 18px; background: var(--accent-soft); }
+.game-text { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.game-text strong { font-size: 1.05rem; letter-spacing: -0.01em; }
+.game-text small { font-size: 0.85rem; color: var(--muted); }
+.game-badge { justify-self: start; margin-top: 6px; padding: 3px 11px; border-radius: 999px; background: var(--grad); color: var(--accent-ink); font-size: 0.72rem; font-weight: 750; }
+.game-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+.game-head h2 { font-size: 1.35rem; letter-spacing: -0.02em; }
+@media (min-width: 1000px) { .game-grid { grid-template-columns: repeat(3, 1fr); } .game-card { flex-direction: column; align-items: flex-start; } }

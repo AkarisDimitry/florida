@@ -1,0 +1,203 @@
+/* Estilos del juego «Bolsa de valores». Todo cuelga de .bolsa (la pantalla) para no tocar nada del resto de la web. */
+
+/* Verde y rojo con contraste suficiente sobre el fondo de cada tema (siempre van con signo, flecha y texto, no solo color). */
+.bolsa { --up: #166534; --down: #b91c1c; display: grid; gap: 14px; min-width: 0; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .bolsa { --up: #4ade80; --down: #f87171; } }
+:root[data-theme="dark"] .bolsa { --up: #4ade80; --down: #f87171; }
+
+/* ---------- entrar y cabecera ---------- */
+.bolsa-join { display: grid; justify-items: center; gap: 10px; padding: 26px 20px; text-align: center; border-radius: 26px; background: var(--surface); border: 1px solid var(--line); box-shadow: var(--shadow); }
+.bolsa-join h2 { font-size: 1.5rem; letter-spacing: -0.025em; }
+.bolsa-join p { max-width: 38ch; color: var(--muted); }
+.bolsa-join p strong { color: var(--text); }
+.bolsa-join-art { width: 76px; height: 76px; border-radius: 26px; display: grid; place-items: center; font-size: 2.3rem; background: var(--grad); box-shadow: 0 12px 30px var(--accent-glow); animation: float 3.2s ease-in-out infinite; }
+
+.bolsa-big { min-height: 52px; padding: 12px 26px; font-size: 1.05rem; }
+.bolsa-join .bolsa-big { margin-top: 6px; min-width: 180px; }
+
+.bolsa-hero { position: relative; overflow: hidden; padding: 18px; border-radius: 26px; color: #fff; background: linear-gradient(135deg, var(--hero-a), var(--hero-b)); box-shadow: var(--shadow); }
+.bolsa-hero::after { content: ""; position: absolute; right: -60px; top: -70px; width: 220px; height: 220px; border-radius: 50%; background: radial-gradient(circle, rgb(255 255 255 / 0.22), transparent 70%); pointer-events: none; }
+.bolsa-hero > * { position: relative; z-index: 1; }
+.bolsa-hero .eyebrow { color: rgb(255 255 255 / 0.82); }
+.bolsa-total { margin: 2px 0 10px; font-size: clamp(1.9rem, 9.5vw, 2.7rem); line-height: 1.1; letter-spacing: -0.03em; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.bolsa-pill { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; margin: 0; padding: 6px 13px; border-radius: 999px; font-size: 0.88rem; font-weight: 750; line-height: 1.3; color: #fff; background: rgb(255 255 255 / 0.22); }
+.bolsa-pill.up { background: #15803d; }
+.bolsa-pill.down { background: #b91c1c; }
+.bolsa-hero-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 14px 0 0; }
+.bolsa-hero-stats div { min-width: 0; padding: 8px 10px; border-radius: 14px; background: rgb(255 255 255 / 0.16); }
+.bolsa-hero-stats dt { font-size: 0.7rem; letter-spacing: 0.04em; color: rgb(255 255 255 / 0.85); }
+.bolsa-hero-stats dd { margin: 1px 0 0; font-size: 0.92rem; font-weight: 750; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+
+.bolsa-tabs button { min-height: 44px; font-size: 0.92rem; }
+.bolsa-stale { padding: 8px 12px; border-radius: 12px; background: color-mix(in srgb, #f59e0b 16%, var(--surface)); }
+.bolsa-body { min-width: 0; }
+.bolsa-body .sec-title:first-child { margin-top: 4px; }
+.bolsa-note { margin: 0 0 10px; }
+
+/* ---------- números con tendencia ---------- */
+.bolsa-delta { display: inline-flex; align-items: center; gap: 4px; padding: 2px 9px; border-radius: 999px; font-size: 0.78rem; font-weight: 750; font-variant-numeric: tabular-nums; white-space: nowrap; color: var(--muted); background: var(--surface-2); }
+.bolsa-delta.up { color: var(--up); background: color-mix(in srgb, var(--up) 12%, var(--surface)); }
+.bolsa-delta.down { color: var(--down); background: color-mix(in srgb, var(--down) 12%, var(--surface)); }
+
+/* ---------- listas: activos, posiciones y clasificación ---------- */
+.bolsa-assets { display: grid; gap: 10px; }
+@media (min-width: 720px) { .bolsa-assets { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.bolsa-asset, .bolsa-rank {
+  display: grid; align-items: center; width: 100%; min-height: 72px; padding: 12px 14px; text-align: left; cursor: pointer;
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-sm); box-shadow: var(--shadow-sm);
+  transition: transform 0.3s var(--spring), box-shadow 0.2s, border-color 0.2s;
+}
+.bolsa-asset { grid-template-columns: 44px minmax(0, 1fr) auto; grid-template-areas: "tile name px" "tile spark chg"; column-gap: 12px; row-gap: 3px; }
+.bolsa-asset.bolsa-pos { grid-template-areas: "tile name px" "tile chg chg"; row-gap: 6px; }
+.bolsa-pos .bolsa-chg { justify-self: start; }
+.bolsa-asset:active, .bolsa-rank:active { transform: scale(0.98); }
+@media (hover: hover) { .bolsa-asset:hover, .bolsa-rank:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); box-shadow: var(--shadow); } }
+.bolsa-tile { grid-area: tile; flex: none; width: 44px; height: 44px; display: grid; place-items: center; font-size: 1.5rem; border-radius: 15px; background: var(--accent-soft); }
+.bolsa-name { grid-area: name; min-width: 0; display: grid; align-content: center; }
+.bolsa-name strong, .bolsa-name h3 { font-size: 0.98rem; letter-spacing: -0.01em; line-height: 1.25; overflow-wrap: anywhere; }
+.bolsa-name small { font-size: 0.76rem; color: var(--muted); overflow-wrap: anywhere; }
+.bolsa-px { grid-area: px; justify-self: end; font-weight: 750; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.bolsa-chg { grid-area: chg; justify-self: end; min-width: 0; }
+.bolsa-spark { grid-area: spark; display: block; width: 100%; max-width: 150px; height: 24px; }
+.bolsa-spark.up { color: var(--up); }
+.bolsa-spark.down { color: var(--down); }
+.bolsa-spark.flat { color: var(--muted); }
+.spark-svg { display: block; width: 100%; height: 100%; overflow: visible; }
+/* En una sola columna ancha (móvil grande o tableta vertical) el mini gráfico va en su propia columna; con dos columnas cada tarjeta es estrecha y se queda apilado. */
+@media (min-width: 520px) and (max-width: 719px) {
+  .bolsa-asset:not(.bolsa-pos) { grid-template-columns: 44px minmax(0, 1fr) 110px 96px 96px; grid-template-areas: "tile name spark px chg"; column-gap: 12px; }
+  .bolsa-asset:not(.bolsa-pos) .bolsa-spark { max-width: none; }
+}
+
+.bolsa-ranking { display: grid; gap: 10px; }
+.bolsa-rank { grid-template-columns: 30px 44px minmax(0, 1fr) auto; grid-template-areas: "n av name px" "n av name chg"; column-gap: 10px; row-gap: 3px; }
+.bolsa-rank.is-me { border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); background: color-mix(in srgb, var(--accent) 6%, var(--surface)); }
+.bolsa-rank .person-dot { grid-area: av; }
+.bolsa-pos-n { grid-area: n; text-align: center; font-size: 1.35rem; font-weight: 750; color: var(--muted); }
+
+.bolsa-empty { display: grid; justify-items: center; gap: 6px; padding: 28px 16px; text-align: center; border-radius: var(--radius); background: var(--surface); border: 1px dashed var(--line); }
+.bolsa-empty > span { font-size: 2rem; }
+.bolsa-empty p { max-width: 36ch; color: var(--muted); font-size: 0.9rem; }
+.bolsa-empty .btn { margin-top: 6px; }
+.bolsa-more { margin: 10px auto 0; display: flex; }
+
+/* ---------- operaciones (actividad) ---------- */
+.bolsa-trades { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.bolsa-trade { display: flex; align-items: flex-start; gap: 10px; padding: 9px 12px; border-radius: 14px; background: var(--surface); border: 1px solid var(--line); }
+.bolsa-trade p { flex: 1; min-width: 0; font-size: 0.9rem; line-height: 1.4; overflow-wrap: anywhere; }
+.bolsa-trade small { display: block; color: var(--muted); font-size: 0.76rem; }
+.bolsa-trade .person-dot { width: 32px; height: 32px; font-size: 0.85rem; }
+.bolsa-tradeico { flex: none; width: 32px; height: 32px; display: grid; place-items: center; border-radius: 50%; font-weight: 800; color: var(--up); background: color-mix(in srgb, var(--up) 14%, var(--surface)); }
+.bolsa-tradeico.down { color: var(--down); background: color-mix(in srgb, var(--down) 14%, var(--surface)); }
+.bolsa-trade .you { font-size: 0.7rem; }
+
+.bolsa-player { display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; align-items: center; gap: 6px 12px; margin-top: 12px; padding: 14px; border-radius: var(--radius); background: var(--surface); border: 1px solid var(--line); box-shadow: var(--shadow-sm); }
+.bolsa-player-total { font-size: 1.15rem; font-variant-numeric: tabular-nums; }
+.bolsa-player .bolsa-pill { grid-column: 1 / -1; justify-self: start; }
+.bolsa-player .bolsa-pill.flat { color: var(--muted); background: var(--surface-2); }
+.bolsa-player .hint { grid-column: 1 / -1; }
+.bolsa-admin { display: grid; gap: 8px; justify-items: start; padding: 14px; border-radius: var(--radius-sm); background: var(--surface); border: 1px solid var(--line); }
+.bolsa-admin .btn { min-height: 44px; }
+
+/* ---------- carga y error ---------- */
+.bolsa-loading { display: grid; gap: 12px; }
+.bolsa-loading i { display: block; height: 96px; border-radius: 22px; background: linear-gradient(110deg, var(--surface-2) 30%, var(--surface) 50%, var(--surface-2) 70%) 0 0 / 200% 100%; animation: shimmer 1.5s linear infinite; }
+.bolsa-loading i:first-child { height: 170px; }
+.bolsa-fail { margin-bottom: 10px; }
+
+/* ---------- ficha del activo ---------- */
+.bolsa-overlay { position: fixed; inset: 0; z-index: 60; display: flex; align-items: flex-end; justify-content: center; }
+.bolsa-backdrop { position: absolute; inset: 0; background: rgb(8 14 28 / 0.55); backdrop-filter: blur(4px); }
+.bolsa-sheet {
+  position: relative; width: min(560px, 100%); max-height: min(94dvh, 860px); display: flex; flex-direction: column; overflow: hidden;
+  border-radius: 26px 26px 0 0; background: var(--surface); color: var(--text); box-shadow: var(--shadow-lg);
+}
+.bolsa-overlay.is-entering .bolsa-backdrop { animation: fade 0.25s; }
+.bolsa-overlay.is-entering .bolsa-sheet { animation: sheet-up 0.4s var(--ease); }
+.bolsa-sheet-scroll { display: grid; gap: 12px; align-content: start; padding: 18px 18px calc(22px + var(--safe-b)); overflow-y: auto; overscroll-behavior: contain; min-width: 0; }
+.bolsa-sheet-scroll::before { content: ""; justify-self: center; width: 42px; height: 4px; margin: -8px 0 -2px; border-radius: 4px; background: var(--line); }
+.bolsa-sheet-head { display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; align-items: center; gap: 12px; }
+.bolsa-sheet-head > .bolsa-tile, .bolsa-sheet-head > .bolsa-name, .bolsa-player > .bolsa-name { grid-area: auto; }
+.bolsa-sheet-head h3 { font-size: 1.15rem; margin: 0; }
+.bolsa-sheet-price { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.bolsa-sheet-price strong { font-size: 2rem; letter-spacing: -0.03em; font-variant-numeric: tabular-nums; }
+@media (min-width: 561px) {
+  .bolsa-overlay { align-items: center; padding: 20px; }
+  .bolsa-sheet { border-radius: 26px; }
+  .bolsa-overlay.is-entering .bolsa-sheet { animation-name: dialog-in; }
+}
+
+.bolsa-chart { position: relative; height: 170px; padding: 4px 0; color: var(--muted); }
+.bolsa-chart.up { color: var(--up); }
+.bolsa-chart.down { color: var(--down); }
+.bolsa-chart svg { display: block; width: 100%; height: 100%; overflow: visible; }
+.bolsa-chart .grid { stroke: var(--line); stroke-width: 1; stroke-dasharray: 3 4; vector-effect: non-scaling-stroke; }
+.bolsa-chart .area { fill: currentColor; opacity: 0.12; }
+.bolsa-chart .line { fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
+.bolsa-chart-hi, .bolsa-chart-lo { position: absolute; left: 0; padding: 0 6px; border-radius: 8px; font-size: 0.7rem; font-weight: 650; font-variant-numeric: tabular-nums; color: var(--muted); background: color-mix(in srgb, var(--surface) 80%, transparent); }
+.bolsa-chart-hi { top: 0; }
+.bolsa-chart-lo { bottom: 0; }
+.bolsa-dot { position: absolute; right: -4px; width: 10px; height: 10px; margin-top: -1px; transform: translateY(-50%); border-radius: 50%; background: currentColor; box-shadow: 0 0 0 4px color-mix(in srgb, currentColor 22%, transparent); }
+.bolsa-chart.is-empty { display: grid; place-items: center; font-size: 0.88rem; border-radius: 16px; background: var(--surface-2); }
+.bolsa-chart-axis { display: flex; justify-content: space-between; margin-top: -6px; font-size: 0.72rem; color: var(--muted); }
+.bolsa-ranges button { min-height: 40px; font-size: 0.85rem; }
+
+/* Al operar, el gráfico se esconde para que el importe y el botón de confirmar quepan sin tener que desplazarse. */
+.bolsa-sheet.is-trading .bolsa-chart, .bolsa-sheet.is-trading .bolsa-chart-axis, .bolsa-sheet.is-trading .bolsa-ranges { display: none; }
+.bolsa-position { margin: 0; padding: 10px 12px; border-radius: 14px; background: var(--surface-2); font-size: 0.9rem; line-height: 1.8; overflow-wrap: anywhere; }
+.bolsa-position:empty { display: none; }
+.bolsa-sides { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.bolsa-sides .bolsa-big { width: 100%; min-height: 56px; font-size: 1.1rem; }
+.bolsa-buy[aria-pressed="true"] { background: #15803d; border-color: transparent; color: #fff; box-shadow: 0 6px 18px rgb(21 128 61 / 0.35); }
+.bolsa-sell[aria-pressed="true"] { background: #b91c1c; border-color: transparent; color: #fff; box-shadow: 0 6px 18px rgb(185 28 28 / 0.35); }
+.bolsa-buy:not([aria-pressed="true"]) { color: var(--up); }
+.bolsa-sell:not([aria-pressed="true"]) { color: var(--down); }
+.bolsa-sides .btn:disabled { color: var(--muted); }
+.bolsa-hint-sell { margin: -4px 0 0; text-align: center; }
+.bolsa-joinnote { margin: 0; }
+.bolsa-joinnote p { margin: 0; }
+
+.bolsa-trade-form { gap: 10px; padding: 14px; border-radius: 18px; background: var(--surface-2); border: 1px solid var(--line); }
+.bolsa-form-title { margin: 0; font-weight: 750; line-height: 1.35; }
+.bolsa-form-title small { display: block; font-weight: 500; color: var(--muted); font-size: 0.82rem; }
+.bolsa-chips { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.bolsa-chips.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.bolsa-chip {
+  min-height: 46px; padding: 8px 6px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); color: var(--text); cursor: pointer;
+  font-size: 0.92rem; font-weight: 700; line-height: 1.2; font-variant-numeric: tabular-nums; transition: transform 0.2s var(--spring), background 0.2s;
+}
+.bolsa-chip:active { transform: scale(0.96); }
+.bolsa-chip[aria-pressed="true"] { background: var(--grad); color: var(--accent-ink); border-color: transparent; }
+.bolsa-chip:disabled { opacity: 0.45; cursor: default; }
+.bolsa-trade-form label { font-size: 0.82rem; }
+.bolsa-trade-form input { min-height: 46px; }
+.bolsa-plan { display: grid; gap: 2px; min-height: 3.1em; padding: 10px 12px; border-radius: 14px; background: var(--surface); border: 1px solid var(--line); font-size: 0.92rem; line-height: 1.4; overflow-wrap: anywhere; }
+.bolsa-plan small { color: var(--muted); font-size: 0.8rem; }
+.bolsa-plan > span { color: var(--muted); }
+.bolsa-form-actions { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 10px; }
+.bolsa-form-actions .btn { min-height: 52px; white-space: normal; line-height: 1.2; }
+.bolsa-form-actions .bolsa-big { padding-inline: 12px; }
+.bolsa-form-actions .btn.ghost { padding-inline: 16px; }
+
+.bolsa-live { display: grid; gap: 10px; }
+.bolsa-live:empty { display: none; }
+.bolsa-error { margin: 0; padding: 12px 14px; border-radius: 14px; font-weight: 650; line-height: 1.4; color: var(--down); background: color-mix(in srgb, var(--down) 11%, var(--surface)); border: 1px solid color-mix(in srgb, var(--down) 35%, var(--line)); overflow-wrap: anywhere; }
+.bolsa-result { padding: 12px 14px; border-radius: 14px; font-size: 0.92rem; line-height: 1.5; background: color-mix(in srgb, var(--up) 11%, var(--surface)); border: 1px solid color-mix(in srgb, var(--up) 35%, var(--line)); overflow-wrap: anywhere; }
+.bolsa-result p { margin: 4px 0 0; }
+
+@media (max-width: 345px) {
+  .bolsa-hero-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .bolsa-hero-stats div:last-child { grid-column: 1 / -1; }
+  .bolsa-form-actions .bolsa-big { font-size: 1rem; }
+}
+@media (max-width: 380px) {
+  .bolsa-hero, .bolsa-join { padding-inline: 14px; }
+  .bolsa-hero-stats { gap: 6px; }
+  .bolsa-hero-stats div { padding: 7px 8px; }
+  .bolsa-sheet-scroll { padding-inline: 14px; }
+  .bolsa-sheet-price strong { font-size: 1.7rem; }
+  .bolsa-chip { font-size: 0.85rem; }
+}
+@media (min-width: 1000px) {
+  .bolsa-hero-stats { max-width: 520px; }
+}

@@ -113,12 +113,16 @@ export function guarded(fn) {
 // Si la base de datos aún no tiene las columnas nuevas, el error de Supabase es críptico: lo explicamos.
 export function schemaHint(err) {
   const message = err?.message || String(err);
+  // Fotos y audios en comentarios, notas de voz y compras (adjuntos.sql y compras.sql).
+  if ((/schema cache|does not exist|could not find|permission denied/i.test(message) && /audios|attached_audio|attached_photo|on_photo|reply_to|expense_id|'kind'|'place'|'activity_id' column of 'photos'/i.test(message)) || /bucket not found/i.test(message)) {
+    return new Error("Falta ejecutar supabase/todo_en_uno.sql en Supabase (fotos y audios en comentarios, compras). No hace daño repetirlo.");
+  }
   // Solo cuando falta la tabla o la columna (o el permiso); un CHECK que falla también nombra "expenses" y no es esto.
   if (/schema cache|does not exist|permission denied|could not find the table/i.test(message) && /expenses|checklist_items|caption/i.test(message)) {
-    return new Error("Falta ejecutar supabase/extras.sql en Supabase (gastos, maleta y pies de foto).");
+    return new Error("Falta ejecutar supabase/todo_en_uno.sql en Supabase (gastos, maleta y pies de foto). No hace daño repetirlo.");
   }
   if (/schema cache|does not exist|could not find the function/i.test(message) && /request_access|approve_access|deny_access|add_member|remove_member|list_members|access_requests|is_admin/i.test(message)) {
-    return new Error("Falta ejecutar supabase/acceso.sql en Supabase (solicitudes de acceso y administradores).");
+    return new Error("Falta ejecutar supabase/todo_en_uno.sql en Supabase (solicitudes de acceso y administradores). No hace daño repetirlo.");
   }
   if (/column|schema cache/i.test(message) && /lat|lng|rating|taken_at/i.test(message)) {
     return new Error("Falta ejecutar supabase/mapa.sql en Supabase (columnas nuevas de ubicación y valoración).");

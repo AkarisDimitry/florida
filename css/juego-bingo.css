@@ -1,0 +1,159 @@
+/* Estilos del juego «Bingo del viaje». Usa las variables de styles.css, así que sigue el tema claro/oscuro y la paleta elegida. */
+.game-bingo {
+  --bingo-gold: #f59e0b;
+  --bingo-gold-ink: #422006;
+  --bingo-check: #15803d; /* la marca va sobre la foto: el mismo verde oscuro con ✓ blanco en los dos temas */
+  display: grid; gap: 14px; max-width: 620px;
+}
+.game-bingo > * { min-width: 0; }
+
+/* ----- control segmentado ----- */
+.bingo-seg { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; padding: 4px; border-radius: 20px; background: var(--surface); border: 1px solid var(--line); box-shadow: var(--shadow-sm); }
+.bingo-seg button {
+  min-height: 46px; padding: 6px 4px; border: 0; border-radius: 16px; background: none; cursor: pointer;
+  font: inherit; font-size: 0.92rem; font-weight: 700; color: var(--muted); transition: background 0.25s, color 0.25s, transform 0.25s var(--spring);
+}
+.bingo-seg button:active { transform: scale(0.96); }
+.bingo-seg button[aria-pressed="true"] { background: var(--grad); color: var(--accent-ink); box-shadow: 0 6px 16px var(--accent-glow); }
+.bingo-seg button:focus-visible, .bingo-cell:focus-visible, .bingo-player:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+
+.bingo-loading { padding: 40px 0; text-align: center; color: var(--muted); }
+.bingo-stale { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: var(--radius-sm); font-size: 0.82rem; background: color-mix(in srgb, #f59e0b 16%, var(--surface)); border: 1px solid color-mix(in srgb, #f59e0b 40%, var(--line)); }
+
+/* ----- avisos: ganador del bingo ----- */
+.bingo-win {
+  display: flex; align-items: flex-start; gap: 10px; padding: 8px 12px; border-radius: var(--radius-sm); font-size: 0.86rem;
+  background: color-mix(in srgb, var(--bingo-gold) 20%, var(--surface)); border: 1px solid color-mix(in srgb, var(--bingo-gold) 55%, var(--line));
+}
+.bingo-win > span:first-child { font-size: 1.4rem; line-height: 1.2; }
+.bingo-win small { display: block; color: var(--muted); }
+
+/* ----- progreso ----- */
+.bingo-head { display: grid; gap: 6px; padding: 12px 14px; border-radius: var(--radius); background: var(--surface); border: 1px solid var(--line); box-shadow: var(--shadow-sm); }
+.bingo-count { font-size: 1.12rem; letter-spacing: -0.01em; }
+.bingo-bar { height: 12px; border-radius: 999px; background: var(--surface-2); overflow: hidden; }
+.bingo-bar i { display: block; height: 100%; min-width: 0; border-radius: 999px; background: var(--grad); transition: width 0.6s var(--ease); }
+.bingo-hint { font-size: 0.82rem; line-height: 1.35; color: var(--muted); }
+.bingo-hint.center { text-align: center; }
+.bingo-admin { text-align: center; }
+.bingo-admin .link-btn { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; padding-inline: 14px; color: var(--muted); }
+
+/* ----- el cartón ----- */
+.bingo-board {
+  container: bingo / inline-size;
+  display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 4px; padding: 5px;
+  border-radius: 22px; background: var(--surface); border: 1px solid var(--line); box-shadow: var(--shadow-sm);
+}
+/* En pantallas estrechas el cartón sale un poco de los márgenes de la página para que cada casilla mida más de 56 px. */
+@media (max-width: 420px) { .bingo-board { margin-inline: -10px; padding: 4px; gap: 3px; border-radius: 18px; } }
+.bingo-cell {
+  position: relative; aspect-ratio: 1; min-width: 0; min-height: 56px; padding: 3px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; overflow: hidden; text-align: center; cursor: pointer;
+  border: 1px solid var(--line); border-radius: 12px; background: var(--surface-2); color: var(--text); font: inherit;
+  transition: transform 0.25s var(--spring), box-shadow 0.2s;
+}
+.bingo-cell:active { transform: scale(0.93); }
+@media (hover: hover) { .bingo-cell:hover { box-shadow: var(--shadow); } }
+.bingo-emoji { font-size: clamp(1.1rem, 7.4cqw, 2rem); line-height: 1; }
+.bingo-text {
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; max-width: 100%;
+  font-size: clamp(0.58rem, 3.3cqw, 0.84rem); line-height: 1.12; font-weight: 650; overflow-wrap: anywhere; hyphens: auto;
+}
+.bingo-text.no-emoji { -webkit-line-clamp: 4; font-size: clamp(0.62rem, 3.6cqw, 0.9rem); }
+@container bingo (min-width: 430px) { .bingo-text { -webkit-line-clamp: 3; } .bingo-text.no-emoji { -webkit-line-clamp: 5; } }
+@container bingo (max-width: 429px) { .bingo-text.no-emoji { -webkit-line-clamp: 4; } }
+
+/* Marcada: miniatura de la foto, una marca (✓) bien visible y el borde verde; ★ y aro dorado si forma parte de una línea. */
+.bingo-cell.is-done { border: 2px solid var(--bingo-check); background: color-mix(in srgb, var(--bingo-check) 14%, var(--surface)); }
+.bingo-photo { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.bingo-cell.is-done:has(.bingo-photo)::after { content: ""; position: absolute; inset: 0; background: linear-gradient(to top, rgb(0 0 0 / 0.5), transparent 50%); pointer-events: none; }
+.bingo-cell.is-done:has(.bingo-photo) .bingo-emoji { position: absolute; left: 3px; bottom: 1px; z-index: 1; font-size: clamp(0.85rem, 5cqw, 1.3rem); text-shadow: 0 1px 3px rgb(0 0 0 / 0.6); }
+.bingo-check {
+  position: absolute; top: 3px; right: 3px; z-index: 2; width: clamp(18px, 7.4cqw, 26px); aspect-ratio: 1; display: grid; place-items: center;
+  border-radius: 50%; background: var(--bingo-check); color: #fff; box-shadow: 0 0 0 2px #fff, 0 1px 4px rgb(0 0 0 / 0.45);
+}
+.bingo-check .ico { width: 70%; height: 70%; stroke-width: 3; }
+.bingo-cell.is-line { border-color: var(--bingo-gold); box-shadow: 0 0 0 2px var(--bingo-gold), 0 0 16px color-mix(in srgb, var(--bingo-gold) 60%, transparent); z-index: 1; }
+.bingo-cell.is-line .bingo-check { background: var(--bingo-gold); color: var(--bingo-gold-ink); }
+.bingo-cell.is-line .bingo-check .ico { fill: currentColor; stroke-width: 1.5; }
+@media (prefers-reduced-motion: no-preference) {
+  .bingo-cell.is-new { animation: bingo-pop 0.7s var(--spring); }
+  @keyframes bingo-pop { 0% { transform: scale(0.6); } 60% { transform: scale(1.12); } 100% { transform: scale(1); } }
+}
+
+/* ----- cartón de otra persona ----- */
+.bingo-viewing { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.bingo-viewing h3 { font-size: 1.1rem; }
+.bingo-viewing .btn { min-height: 44px; }
+
+/* ----- tarjetas de jugadores (Todos y Ranking) ----- */
+.bingo-players, .bingo-rank { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
+.bingo-player {
+  width: 100%; min-height: 76px; display: flex; align-items: center; gap: 12px; padding: 12px 14px; text-align: left; cursor: pointer;
+  font: inherit; color: inherit; border-radius: var(--radius-sm); background: var(--surface); border: 1px solid var(--line); box-shadow: var(--shadow-sm);
+  transition: transform 0.25s var(--spring), box-shadow 0.2s;
+}
+.bingo-player:active { transform: scale(0.98); }
+@media (hover: hover) { .bingo-player:hover { box-shadow: var(--shadow); } }
+.bingo-player.is-bingo { border-color: color-mix(in srgb, var(--bingo-gold) 70%, var(--line)); background: color-mix(in srgb, var(--bingo-gold) 12%, var(--surface)); }
+.bingo-player-main { flex: 1; min-width: 0; display: grid; gap: 4px; }
+.bingo-player-main strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bingo-player-stats { font-size: 0.82rem; color: var(--muted); }
+.bingo-player .bingo-bar { height: 8px; }
+.bingo-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.bingo-chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 10px; border-radius: 999px; font-size: 0.76rem; font-weight: 750; background: var(--surface-2); color: var(--text); }
+.bingo-chip.is-bingo { background: linear-gradient(135deg, #fde68a, var(--bingo-gold)); color: var(--bingo-gold-ink); }
+/* Mapa en miniatura del cartón: casillas marcadas y líneas completas */
+.bingo-mini { flex: none; display: grid; grid-template-columns: repeat(5, 7px); gap: 2px; }
+.bingo-mini i { width: 7px; height: 7px; border-radius: 2px; background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line); }
+.bingo-mini i.is-on { background: var(--bingo-check); box-shadow: none; }
+.bingo-mini i.is-line { background: var(--bingo-gold); box-shadow: none; }
+.bingo-pos { flex: none; width: 30px; height: 30px; display: grid; place-items: center; border-radius: 50%; background: var(--surface-2); font-weight: 800; font-variant-numeric: tabular-nums; }
+.bingo-pos.is-first { background: var(--bingo-gold); color: var(--bingo-gold-ink); }
+.bingo-hero {
+  display: flex; align-items: center; gap: 14px; padding: 16px; border-radius: var(--radius); color: var(--bingo-gold-ink);
+  background: linear-gradient(135deg, #fde68a, var(--bingo-gold)); box-shadow: var(--shadow);
+}
+.bingo-hero.is-empty { color: var(--text); background: var(--surface); border: 1px solid var(--line); box-shadow: var(--shadow-sm); }
+.bingo-hero-medal { flex: none; font-size: 2.6rem; line-height: 1; }
+.bingo-hero h3 { font-size: 1.35rem; letter-spacing: -0.02em; }
+.bingo-hero p { font-size: 0.88rem; }
+.bingo-hero .you { background: rgb(255 255 255 / 0.55); color: var(--bingo-gold-ink); }
+
+/* ----- diálogo propio ----- */
+.bingo-dialog { width: min(520px, calc(100vw - 16px)); padding: 16px 16px 18px; }
+.bingo-dialog[open] { display: grid; gap: 12px; align-content: start; }
+.bingo-dialog .dialog-head { margin: 0; }
+.bingo-dialog .dialog-head h2:focus { outline: none; }
+.bingo-dialog .btn { white-space: normal; text-align: center; }
+.bingo-dialog .btn.big { min-height: 52px; width: 100%; font-size: 1rem; }
+.bingo-dialog .dialog-actions { display: grid; justify-content: stretch; gap: 8px; margin: 0; }
+.bingo-dialog .dialog-actions .btn.danger { margin-right: 0; }
+@media (min-width: 440px) { .bingo-dialog .dialog-actions { grid-auto-flow: column; grid-auto-columns: 1fr; } }
+.bingo-challenge { display: grid; justify-items: center; gap: 6px; padding: 14px 12px; border-radius: var(--radius-sm); background: var(--accent-soft); text-align: center; }
+.bingo-challenge-emoji { font-size: 3rem; line-height: 1; }
+.bingo-challenge p { font-size: 1.3rem; font-weight: 750; line-height: 1.25; letter-spacing: -0.01em; overflow-wrap: anywhere; }
+.bingo-pick { display: grid; gap: 8px; }
+.bingo-preview, .bingo-big { margin: 0; border-radius: 16px; overflow: hidden; background: #000; }
+.bingo-preview img { display: block; width: 100%; max-height: 32dvh; object-fit: contain; }
+.bingo-big img { display: block; width: 100%; max-height: 44dvh; object-fit: contain; }
+.bingo-status { padding: 8px 12px; border-radius: var(--radius-sm); background: var(--surface-2); font-size: 0.9rem; font-weight: 650; text-align: center; }
+.bingo-error { padding: 10px 12px; border-radius: var(--radius-sm); font-size: 0.9rem; font-weight: 600; color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, var(--surface)); border: 1px solid color-mix(in srgb, var(--danger) 40%, var(--line)); }
+.bingo-by { display: flex; align-items: center; gap: 10px; }
+.bingo-by > span:last-child { display: grid; min-width: 0; }
+.bingo-by small { color: var(--muted); }
+.bingo-confirm { display: grid; gap: 10px; padding: 12px; border-radius: var(--radius-sm); background: color-mix(in srgb, var(--danger) 8%, var(--surface)); border: 1px solid color-mix(in srgb, var(--danger) 30%, var(--line)); }
+.bingo-confirm p { font-weight: 650; }
+
+/* edición de retos (administración) */
+.bingo-edit { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
+.bingo-edit label { display: block; margin-bottom: 4px; font-size: 0.85rem; font-weight: 700; }
+.bingo-edit label small { font-weight: 500; color: var(--muted); }
+.bingo-edit .bingo-marks-note { padding: 0 8px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-weight: 700; }
+.bingo-edit-row { display: flex; align-items: center; gap: 6px; }
+.bingo-edit-row input {
+  flex: 1; min-width: 0; min-height: 46px; padding: 8px 12px; border-radius: 12px; border: 1px solid var(--line);
+  background: var(--surface-2); color: var(--text); font: inherit; font-size: max(16px, 1rem);
+}
+.bingo-edit-row input:focus-visible { outline: 3px solid var(--accent); outline-offset: 1px; }
+.bingo-edit-row .icon-btn { flex: none; width: 46px; height: 46px; font-size: 1.2rem; }

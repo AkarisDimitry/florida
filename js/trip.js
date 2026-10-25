@@ -28,7 +28,9 @@ export function defaultDay() {
 }
 
 export const photoTime = (p) => p.taken_at || p.created_at;
-export const photosNewestFirst = () => [...state.photos].sort((a, b) => photoTime(b).localeCompare(photoTime(a)));
+// Los tickets de las compras (fotos con `expense_id`) no son fotos del viaje: se ven y se borran en Cuentas.
+export const tripPhotos = () => state.photos.filter((p) => !p.expense_id);
+export const photosNewestFirst = () => tripPhotos().sort((a, b) => photoTime(b).localeCompare(photoTime(a)));
 
 // Actividades con ubicación, en orden cronológico, con su número dentro del día y el color del día.
 export function locatedStops(days = allDays()) {

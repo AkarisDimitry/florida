@@ -2,12 +2,14 @@
 import { config } from "./config.js";
 import { state, ctx } from "./state.js";
 import { icon } from "./icons.js";
-import { $, $$, esc, hasCoords, CATEGORIES, guarded, toast, schemaHint, authHint, fmtStamp, fmtStampWallClock } from "./util.js";
+import { $, $$, esc, hasCoords, CATEGORIES, guarded, toast, hideToast, schemaHint, authHint, fmtStamp, fmtStampWallClock } from "./util.js";
 import { getName, setName } from "./store.js";
 import { defaultDay, photoTime, photosNewestFirst } from "./trip.js";
 import { currentPosition, nearest, reversePlace, searchPlaces } from "./geo.js";
 import { EXPORTERS } from "./export.js";
 import { settings, setSetting } from "./settings.js";
+import { threadHtml, commentsOf, cancelRecordings, withReplies, attachmentsOf, removeAttachments } from "./comments.js";
+import { resetActivityDraft, uploadActivityDraft, hasDraft, initAttach } from "./attach.js";
 
 const activityDialog = $("#activity-dialog");
 const activityForm = $("#activity-form");
@@ -95,6 +97,7 @@ export function openActivity({ id, day, category, lat, lng, title, place, notes,
   $("#activity-title").textContent = a ? "Editar actividad" : "Nueva actividad";
   activityForm.reset();
   fillForm({ ...(a ?? {}), day: a?.day ?? day ?? defaultDay(), category: a?.category ?? category ?? "otro", lat: a?.lat ?? lat, lng: a?.lng ?? lng, title: a?.title ?? title, place: a?.place ?? place, notes: a?.notes ?? notes });
+  resetActivityDraft(a?.id ?? null);
   activityDialog.showModal();
   if (!a && Number.isFinite(lat) && !place) suggestPlaceName(lat, lng);
   if (!a && searchQuery && !Number.isFinite(lat)) guarded(() => runSearch(searchQuery))(); // lugar compartido sin coordenadas: se busca por el nombre
@@ -124,7 +127,10 @@ async function runSearch(override) {
   }
 }
 
+let savingActivity = false;
+
 function bindActivityDialog() {
+  initAttach();
   const e = activityForm.elements;
   e.category.innerHTML = Object.entries(CATEGORIES)
     .map(([value, c]) => `<option value="${value}">${c.emoji} ${c.label}</option>`)
@@ -167,6 +173,8 @@ function bindActivityDialog() {
     }),
   );
 
+  activityDialog.addEventListener("close", () => cancelRecordings()); // cerrar el diálogo corta la grabación (y apaga el micrófono)
+
   activityForm.addEventListener(
     "submit",
     guarded(async (event) => {
@@ -185,18 +193,52 @@ function bindActivityDialog() {
         notes: f.get("notes").trim() || null,
       };
       if (state.editingId) activity.id = state.editingId;
+      if (savingActivity) return; // un doble toque no debe guardar dos veces
+      savingActivity = true;
       try {
-        await ctx.store.saveActivity(activity);
-      } catch (err) {
-        throw schemaHint(err);
+        let id;
+        try {
+          id = await ctx.store.saveActivity(activity);
+        } catch (err) {
+          throw schemaHint(err);
+        }
+        // Las fotos y los audios elegidos se suben ya a la actividad guardada.
+        const { failed, reason } = hasDraft() ? await uploadActivityDraft(id) : { failed: 0, reason: "" };
+        hideToast(); // quita el aviso «Subiendo foto…»
+        activityDialog.close();
+        await ctx.actions.refresh();
+        if (failed) toast(`La actividad se guardó, pero ${failed === 1 ? "un adjunto no se pudo subir" : `${failed} adjuntos no se pudieron subir`}${reason ? ` (${reason})` : ""}. Ábrela para volver a intentarlo.`, 10000);
+      } finally {
+        savingActivity = false;
       }
-      activityDialog.close();
-      await ctx.actions.refresh();
     }),
   );
 }
 
 // ---------- visor de fotos ----------
+
+// Comentarios de la foto (hilos con respuestas, fotos y audios). Se repintan con cada cambio sin quitar el foco al que escribe
+// ni cortar un audio que suena.
+function renderLightboxThread(id) {
+  const box = $("#lightbox-thread");
+  box.hidden = !state.attach;
+  if (!state.attach) return;
+  const key = `lb:${id}`;
+  // Si suena un audio de ESTA foto no se repinta (se cortaría); si se cambió de foto, sí.
+  if (box.querySelector("details")?.dataset.id === key && [...box.querySelectorAll("audio")].some((a) => !a.paused && !a.ended)) return;
+  const field = document.activeElement;
+  const keep = box.contains(field) && field.name === "body" ? { key: field.closest("form").dataset.key, from: field.selectionStart, to: field.selectionEnd } : null;
+  box.innerHTML = `<details class="lb-comments" data-id="${key}" ${state.open.has(key) ? "open" : ""}><summary>${icon("chat", 16)} Comentarios <span class="count">${commentsOf("photo", id).length}</span></summary>${threadHtml("photo", id)}</details>`;
+  if (keep) {
+    const input = box.querySelector(`form[data-key="${CSS.escape(keep.key)}"] input[name=body]`);
+    input?.focus();
+    try {
+      input?.setSelectionRange(keep.from, keep.to);
+    } catch {
+      /* sin selección */
+    }
+  }
+}
 
 const captionForm = $("#lb-caption-form");
 let captionFor = null;
@@ -209,6 +251,7 @@ export function showPhoto(id) {
     return;
   }
   const photo = photos[i];
+  if (state.lightboxId !== id) cancelRecordings(); // otra foto: no se sigue grabando para la anterior
   state.lightboxId = id;
   const own = photo.created_by === ctx.store.user?.id;
   const located = hasCoords(photo);
@@ -231,6 +274,7 @@ export function showPhoto(id) {
   $("#lb-caption-btn").hidden = !own;
   $("#lb-caption-btn").innerHTML = `${icon("edit", 15)} ${photo.caption ? "Editar pie" : "Añadir pie"}`;
   if (captionForm.hidden === false && captionFor !== id) captionForm.hidden = true; // al cambiar de foto se cierra el editor
+  renderLightboxThread(photo.id);
   $("#lb-prev").disabled = i === 0;
   $("#lb-next").disabled = i === photos.length - 1;
   $("#lb-open").href = photo.full_url;
@@ -303,11 +347,17 @@ function bindLightbox() {
   $("#lb-prev").addEventListener("click", () => stepPhoto(-1));
   $("#lb-next").addEventListener("click", () => stepPhoto(1));
   lightbox.addEventListener("keydown", (event) => {
+    if (event.target.closest?.("input, textarea, [contenteditable]")) return; // las flechas mueven el cursor, no la foto
     if (event.key === "ArrowLeft") stepPhoto(-1);
     else if (event.key === "ArrowRight") stepPhoto(1);
   });
   lightbox.addEventListener("click", (event) => {
     if (event.target === lightbox) lightbox.close();
+  });
+  // Al cerrar el visor se para el audio que sonara y se cancela la grabación (si no, seguiría con el visor ya oculto).
+  lightbox.addEventListener("close", () => {
+    cancelRecordings();
+    for (const audio of lightbox.querySelectorAll("audio")) audio.pause();
   });
 
   $("#lb-map").addEventListener("click", () => {
@@ -337,8 +387,11 @@ function bindLightbox() {
     guarded(async () => {
       const photo = state.photos.find((p) => p.id === selected());
       if (!photo || !confirm("¿Borrar esta foto? No se puede deshacer.")) return;
+      // Sus comentarios se borran con ella; los audios y fotos que llevaban se apuntan para quitarlos después.
+      const attachments = attachmentsOf(withReplies(commentsOf("photo", photo.id)));
       await ctx.store.deletePhoto(photo);
       lightbox.close();
+      await removeAttachments(attachments);
       await ctx.actions.refresh();
     }),
   );

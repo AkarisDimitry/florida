@@ -6,7 +6,8 @@ import { hasCoords, categoryOf, utc, capitalize, fmtDayLong, fmtDayShort, dayCol
 import { describeWeather } from "./weather.js";
 import { allDays, byTime, locatedStops, currentRoutes, photoTime } from "./trip.js";
 import { distanceKm } from "./geo.js";
-import { balances, settlements, totalCents, fromCents, shares } from "./ledger.js";
+import { balances, settlements, totalCents, fromCents, shares, people, isValid } from "./ledger.js";
+import { gameSummaries } from "./juegos/index.js";
 
 const NEAR_KM = 0.35; // una foto con GPS se asocia a un lugar si se hizo a menos de 350 m
 const pad = (n) => String(n).padStart(2, "0");
@@ -39,6 +40,9 @@ const push = (map, key, value) => {
   map.get(key).push(value);
 };
 
+// Gastos y compras repartidos (válidos) de un día.
+const sharedOn = (day) => state.expenses.filter((e) => e.day === day && isValid(e)).reduce((sum, e) => sum + Number(e.amount || 0), 0);
+
 export function buildAlbum() {
   const days = allDays();
   const dayIndex = new Map(days.map((d, i) => [d, i]));
@@ -48,13 +52,20 @@ export function buildAlbum() {
     [...state.comments].sort((a, b) => a.created_at.localeCompare(b.created_at)),
     (c) => c.activity_id,
   );
-  const photos = [...state.photos].sort((a, b) => photoTime(a).localeCompare(photoTime(b)));
+  // Los tickets de las compras no son recuerdos: se quedan en Cuentas.
+  const photos = state.photos.filter((p) => !p.expense_id).sort((a, b) => photoTime(a).localeCompare(photoTime(b)));
+  const activityIds = new Set(state.activities.map((a) => a.id));
 
   // 1. Cada foto va a un lugar (por GPS y fecha), a la galería de su día (solo por fecha) o a "más recuerdos".
   const byActivity = new Map();
   const byDay = new Map();
   const orphans = [];
   for (const photo of photos) {
+    // Una foto que se adjuntó a una actividad va a esa actividad, sin mirar GPS ni fecha.
+    if (photo.activity_id && activityIds.has(photo.activity_id)) {
+      push(byActivity, photo.activity_id, photo);
+      continue;
+    }
     const day = photoDay(photo);
     const isTripDay = dayIndex.has(day);
     let target = null;
@@ -89,6 +100,8 @@ export function buildAlbum() {
       stop: stopById.get(a.id) ?? null,
       order: stopById.get(a.id)?.order ?? null,
       photos: byActivity.get(a.id) ?? [],
+      // Notas de voz de la actividad; las que llegaron dentro de un comentario se ven en ese comentario.
+      audios: state.audios.filter((x) => x.activity_id === a.id && !state.comments.some((c) => c.attached_audio === x.id)),
       comments: commentsByActivity.get(a.id) ?? [],
     }));
     const city = state.places[day] ?? "";
@@ -103,6 +116,7 @@ export function buildAlbum() {
       city,
       weather,
       center: stops.find((s) => s.day === day) ?? null,
+      spentShared: sharedOn(day), // gastos y compras repartidos de ese día
       summary: summarizeDay({ activities: dayActivities, loosePhotos, route, city, weather, cost: activities.reduce((sum, a) => sum + (a.cost || 0), 0) }),
       loosePhotos,
       route,
@@ -188,10 +202,69 @@ export function buildAlbum() {
       }
     : null;
 
+  // Por persona: qué ha aportado cada viajero (fotos, lugares, comentarios, notas de voz) y cómo van las cuentas.
+  const key = (n) => String(n ?? "").trim().toLowerCase();
+  const balanceOf = new Map(balances().map((r) => [key(r.name), r]));
+  const names = new Map();
+  for (const n of [...people(), ...stats.authors]) if (key(n) && !names.has(key(n))) names.set(key(n), String(n).trim());
+  const countBy = (list, pick = (x) => x.created_by_name) => {
+    const m = new Map();
+    for (const x of list) m.set(key(pick(x)), (m.get(key(pick(x))) ?? 0) + 1);
+    return m;
+  };
+  const photosBy = countBy(photos);
+  const placesBy = countBy(state.activities);
+  const commentsBy = countBy(state.comments);
+  const audiosBy = countBy(state.audios);
+  const purchasesBy = countBy(state.expenses.filter((e) => e.kind === "compra"), (e) => e.paid_by);
+  const perPerson = [...names].map(([k, name]) => {
+    const b = balanceOf.get(k);
+    return {
+      name,
+      photos: photosBy.get(k) ?? 0,
+      places: placesBy.get(k) ?? 0,
+      comments: commentsBy.get(k) ?? 0,
+      audios: audiosBy.get(k) ?? 0,
+      purchases: purchasesBy.get(k) ?? 0,
+      paid: b ? fromCents(b.paid) : 0,
+      owed: b ? fromCents(b.owed) : 0,
+      balance: b ? fromCents(b.balance) : 0,
+    };
+  }).sort((a, b) => b.photos + b.places + b.comments + b.audios - (a.photos + a.places + a.comments + a.audios) || a.name.localeCompare(b.name, "es"));
+
+  // Por día: una fila con lo esencial de cada jornada, y también los días con gastos aunque no tengan capítulo (sin planes ni fotos),
+  // para que el total coincida con el de Cuentas. «Gasto» son los gastos y compras repartidos; si el viaje no tiene ninguno, lo planificado.
+  const anyShared = state.expenses.some(isValid);
+  const spentOf = (shared, planned) => (anyShared ? shared : planned);
+  const perDay = chapters.map((c) => ({
+    day: c.day,
+    label: c.shortTitle,
+    number: c.number,
+    color: c.color,
+    city: c.city,
+    plans: c.activities.length,
+    km: c.km,
+    photos: c.activities.reduce((n, a) => n + a.photos.length, c.loosePhotos.length),
+    spent: spentOf(c.spentShared, c.cost),
+    weather: c.weather,
+  }));
+  if (anyShared) {
+    const have = new Set(perDay.map((r) => r.day));
+    for (const day of [...new Set(state.expenses.filter(isValid).map((e) => e.day))]) {
+      if (!day || have.has(day)) continue;
+      const i = dayIndex.get(day);
+      perDay.push({ day, label: capitalize(fmtDayShort.format(utc(day))), number: i == null ? null : i + 1, color: i == null ? "#94a3b8" : dayColor(i), city: state.places[day] ?? "", plans: 0, km: 0, photos: 0, spent: sharedOn(day), weather: null });
+    }
+    perDay.sort((a, b) => a.day.localeCompare(b.day));
+  }
+
   return {
     trip: config.trip,
     generatedAt: new Date(),
     chapters,
+    perPerson,
+    perDay,
+    games: gameSummaries(),
     orphans,
     ledger,
     awards: buildAwards({ photos, chapters, stops, byActivity, highlights, ledger }),
@@ -203,7 +276,7 @@ export function buildAlbum() {
     routes,
     placeIndex,
     photoIndex,
-    isEmpty: !state.activities.length && !photos.length,
+    isEmpty: !state.activities.length && !photos.length && !gameSummaries().length,
   };
 }
 

@@ -1,13 +1,13 @@
 // Estado compartido entre módulos. `ctx` guarda las piezas que se crean al arrancar (store, mapa)
 // y las acciones de app.js que otros módulos necesitan llamar sin importar app.js (evita ciclos).
-export const VIEWS = ["map", "plan", "photos", "food", "album"];
-const HASHES = { "#mapa": "map", "#plan": "plan", "#fotos": "photos", "#comida": "food", "#album": "album", "#gastos": "plan", "#maleta": "plan" };
-// El Itinerario tiene tres secciones: los días, el reparto de gastos y la lista de la maleta.
-export const PLAN_TABS = ["days", "expenses", "packing"];
-const PLAN_HASHES = { "#gastos": "expenses", "#maleta": "packing" };
+export const VIEWS = ["map", "plan", "photos", "games", "album"];
+const HASHES = { "#mapa": "map", "#plan": "plan", "#fotos": "photos", "#juegos": "games", "#album": "album", "#comida": "plan", "#cuentas": "plan", "#gastos": "plan", "#maleta": "plan" };
+// El Itinerario tiene cuatro secciones: los días, dónde comimos, las cuentas (gastos y compras) y la lista de la maleta.
+export const PLAN_TABS = ["days", "food", "expenses", "packing"];
+const PLAN_HASHES = { "#comida": "food", "#cuentas": "expenses", "#gastos": "expenses", "#maleta": "packing" };
 export const hashOf = (view, planTab = "days") => {
-  if (view === "plan") return planTab === "expenses" ? "#gastos" : planTab === "packing" ? "#maleta" : "#plan";
-  return Object.keys(HASHES).find((h) => HASHES[h] === view);
+  if (view === "plan") return { food: "#comida", expenses: "#cuentas", packing: "#maleta" }[planTab] ?? "#plan";
+  return Object.keys(HASHES).find((h) => HASHES[h] === view && !PLAN_HASHES[h]);
 };
 export const viewOfHash = (hash) => HASHES[hash];
 export const planTabOfHash = (hash) => PLAN_HASHES[hash] ?? "days";
@@ -32,6 +32,8 @@ export const state = {
   activities: [],
   comments: [],
   photos: [],
+  audios: [], // notas de voz (adjuntos.sql)
+  attach: false, // false si en Supabase falta ejecutar adjuntos.sql (fotos y audios en comentarios y actividades)
   expenses: [], // gastos repartidos entre viajeros (extras.sql)
   checklist: [], // lista de la maleta (extras.sql)
   extras: true, // false si en Supabase falta ejecutar extras.sql
@@ -49,15 +51,21 @@ export const state = {
   roadMode: read("viaje.rutaCarretera", true), // true = ruta por carretera, false = línea recta
   weather: new Map(), // día -> tiempo (weather.js)
   places: {}, // día -> ciudad
+  facts: {}, // día -> curiosidad de la zona (Wikipedia) para las ideas
+  ideaShift: 0, // «Otro reto»
+  ideaPage: 0, // «Más ideas»
   live: [], // posiciones compartidas por los viajeros
   presence: [], // quién está en línea y cuándo se vio por última vez (presencia.sql)
   presenceOn: false, // false si en Supabase falta ejecutar presencia.sql
   sharing: false, // estoy compartiendo mi ubicación
   me: null, // mi última posición conocida { lat, lng }
+  cuentas: "todo", // filtro de Cuentas: todo | gasto | compra
   filter: { q: "", cat: "" }, // búsqueda y filtro del itinerario
   selectedStop: null,
   selectedPhoto: null, // foto resaltada en el mapa
   playing: false,
+  game: null, // juego abierto en la pestaña Juegos (null = la lista de juegos)
+  games: {}, // resumen de cada juego para el álbum (lo rellena cada juego al cargar)
   loginStep: null, // null (pedir correo) o "code" (esperando el enlace o el código del correo)
   loginEmail: "",
   pendingShared: null, // texto de un lugar compartido que espera a que la persona ponga su nombre

@@ -35,11 +35,15 @@
   <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/dist/maplibre-gl.css">
   <link rel="stylesheet" href="css/styles.css">
+  <link rel="stylesheet" href="css/juegos.css">
+  <link rel="stylesheet" href="css/juego-batalla.css">
+  <link rel="stylesheet" href="css/juego-bolsa.css">
+  <link rel="stylesheet" href="css/juego-bingo.css">
   <script defer src="https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
   <script type="module" src="js/app.js"></script>
 </head>
 <body data-view="map">
-  <script>document.body.dataset.view = { "#plan": "plan", "#gastos": "plan", "#maleta": "plan", "#fotos": "photos", "#comida": "food", "#album": "album" }[location.hash] || "map";</script>
+  <script>document.body.dataset.view = { "#plan": "plan", "#gastos": "plan", "#cuentas": "plan", "#maleta": "plan", "#comida": "plan", "#fotos": "photos", "#juegos": "games", "#album": "album" }[location.hash] || "map";</script>
   <header class="appbar">
     <div class="appbar-title">
       <h1 id="trip-name"></h1>
@@ -90,7 +94,7 @@
     <button type="button" class="tab" data-view="map"></button>
     <button type="button" class="tab" data-view="plan"></button>
     <button type="button" class="tab" data-view="photos"></button>
-    <button type="button" class="tab" data-view="food"></button>
+    <button type="button" class="tab" data-view="games"></button>
     <button type="button" class="tab" data-view="album"></button>
   </nav>
 
@@ -149,6 +153,7 @@
       <label>Notas
         <textarea name="notes" rows="3" maxlength="2000" placeholder="Reserva, enlaces, qué llevar…"></textarea>
       </label>
+      <fieldset class="attach-field" id="act-attach" hidden></fieldset>
       <div class="dialog-actions">
         <button type="button" class="btn ghost" data-close>Cancelar</button>
         <button type="submit" class="btn primary">Guardar</button>
@@ -162,8 +167,15 @@
         <h2 id="expense-heading">Nuevo gasto</h2>
         <button type="button" class="icon-btn" data-close aria-label="Cerrar" data-icon="x"></button>
       </div>
-      <label>Concepto
+      <div class="segmented" id="expense-kind" role="group" aria-label="Tipo de apunte">
+        <button type="button" data-kind="gasto">Gasto</button>
+        <button type="button" data-kind="compra"><span aria-hidden="true">🛒</span> Compra</button>
+      </div>
+      <label><span id="expense-title-label">Concepto</span>
         <input name="title" required maxlength="120" placeholder="Cena en el puerto">
+      </label>
+      <label id="expense-place-field" hidden>Tienda o lugar (opcional)
+        <input name="place" maxlength="120" placeholder="Supermercado, gasolinera…">
       </label>
       <div class="row">
         <label>Importe
@@ -186,6 +198,7 @@
         <button type="button" class="btn small" id="expense-add-person"></button>
       </div>
       <p class="hint" id="expense-hint" aria-live="polite"></p>
+      <fieldset class="attach-field" id="expense-ticket" hidden></fieldset>
       <div class="dialog-actions">
         <button type="button" class="btn danger" id="expense-delete" hidden>Borrar</button>
         <button type="button" class="btn ghost" data-close>Cancelar</button>
@@ -366,6 +379,7 @@
         <a class="btn small" id="lb-open" target="_blank" rel="noopener">Abrir original</a>
         <button type="button" class="btn small danger" id="lb-delete">Borrar</button>
       </div>
+      <div id="lightbox-thread" class="lb-thread" hidden></div>
     </div>
   </dialog>
 

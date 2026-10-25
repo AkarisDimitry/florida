@@ -7,6 +7,8 @@ import { directionsUrl } from "./geo.js";
 import { gate, weatherChip } from "./views.js";
 import { nearbyWiki } from "./places.js";
 import { hueOf } from "./ledger.js";
+import { state } from "./state.js";
+import { clock } from "./media.js";
 
 let current = null; // el álbum que se está mostrando; hydrateAlbum() lo usa para dibujar los mapas
 
@@ -108,6 +110,13 @@ function ledgerBlock(album) {
 const mapPlaceholder = (id, label, action = "") =>
   `<button type="button" class="album-map" data-album-map="${esc(id)}" ${action} aria-label="${esc(label)}"><span class="album-map-msg">Dibujando el mapa…</span></button>`;
 
+// Un comentario del álbum: su texto (o «Foto» / «Nota de voz» si solo llevaba un adjunto) y su reproductor de audio.
+function quoteHtml(c) {
+  const audio = c.attached_audio && state.audios.find((x) => x.id === c.attached_audio);
+  const text = c.body || (c.attached_audio ? "Nota de voz" : c.attached_photo ? "Foto" : "");
+  return `<blockquote class="quote"><p>${esc(text)}</p>${audio?.audio_url ? `<audio controls preload="none" src="${esc(audio.audio_url)}"></audio>` : ""}<cite>${esc(c.created_by_name || "Alguien")}</cite></blockquote>`;
+}
+
 function entry(a, color) {
   const place = a.place
     ? hasCoords(a)
@@ -124,10 +133,52 @@ function entry(a, color) {
       ${meta.length ? `<p class="entry-meta">${meta.join(" · ")}</p>` : ""}
       ${a.notes ? `<p class="entry-notes">${esc(a.notes)}</p>` : ""}
       ${photoStrip(a.photos)}
-      ${a.comments.map((c) => `<blockquote class="quote"><p>${esc(c.body)}</p><cite>${esc(c.created_by_name || "Alguien")}</cite></blockquote>`).join("")}
+      ${a.audios.map((x) => `<div class="cm-audio"><span aria-hidden="true">🎤</span>${x.audio_url ? `<audio controls preload="none" src="${esc(x.audio_url)}"></audio>` : ""}<small>Nota de voz de ${esc(x.created_by_name || "alguien")} · ${esc(clock(x.seconds))}</small></div>`).join("")}
+      ${a.comments.map(quoteHtml).join("")}
       ${data.length ? `<p class="entry-data">${esc(data.join(" · "))}</p>` : ""}
     </div>
   </article>`;
+}
+
+function perPersonBlock(album) {
+  if (!album.perPerson.length) return "";
+  const dot = (name) => `<span class="person-dot" style="--h:${hueOf(name)}" aria-hidden="true">${esc(name.charAt(0).toUpperCase())}</span>`;
+  const item = (n, label) => (n ? `<li><strong>${n}</strong> ${esc(label)}</li>` : "");
+  return `<section class="album-sec"><h3>Por persona</h3><div class="pcards">${album.perPerson
+    .map(
+      (p) => `<article class="pcard">
+      <header>${dot(p.name)}<strong>${esc(p.name)}</strong></header>
+      <ul>${item(p.photos, p.photos === 1 ? "foto" : "fotos")}${item(p.places, p.places === 1 ? "lugar añadido" : "lugares añadidos")}${item(p.comments, p.comments === 1 ? "comentario" : "comentarios")}${item(p.audios, p.audios === 1 ? "nota de voz" : "notas de voz")}${item(p.purchases, p.purchases === 1 ? "compra" : "compras")}</ul>
+      ${p.paid || p.owed ? `<p class="pcard-money">Pagó <b>${esc(money.format(p.paid))}</b> · le tocan ${esc(money.format(p.owed))} · <span class="balance ${p.balance > 0.004 ? "is-plus" : p.balance < -0.004 ? "is-minus" : ""}">${p.balance > 0.004 ? "+" : p.balance < -0.004 ? "−" : ""}${esc(money.format(Math.abs(p.balance)))}</span></p>` : ""}
+    </article>`,
+    )
+    .join("")}</div></section>`;
+}
+
+function daySummary(album) {
+  if (!album.perDay.length) return "";
+  const total = (k) => album.perDay.reduce((s, d) => s + (d[k] || 0), 0);
+  return `<section class="album-sec"><h3>Día a día</h3><div class="table-wrap"><table class="day-table">
+    <thead><tr><th>Día</th><th>Planes</th><th>Fotos</th><th>Km</th><th>Gasto</th></tr></thead>
+    <tbody>${album.perDay
+      .map(
+        (d) => `<tr><td><span class="day-dot" style="--c:${d.color}"></span><strong>${esc(d.label)}</strong>${d.city ? `<small>${esc(d.city)}</small>` : ""}</td><td>${d.plans}</td><td>${d.photos}</td><td>${d.km ? esc(formatKm(d.km)) : "—"}</td><td>${esc(money.format(d.spent || 0))}</td></tr>`,
+      )
+      .join("")}</tbody>
+    <tfoot><tr><td><strong>Total</strong></td><td>${total("plans")}</td><td>${total("photos")}</td><td>${total("km") ? esc(formatKm(total("km"))) : "—"}</td><td>${esc(money.format(album.perDay.reduce((s, d) => s + (d.spent || 0), 0)))}</td></tr></tfoot>
+  </table></div></section>`;
+}
+
+function gamesBlock(album) {
+  if (!album.games.length) return "";
+  return `<section class="album-sec"><h3>Juegos</h3>${album.games
+    .map(
+      (g) => `<article class="gcard"><h4><span aria-hidden="true">${g.emoji}</span> ${esc(g.title)}</h4>
+      ${g.highlights?.length ? `<div class="g-highlights">${g.highlights.map((h) => `<span class="chip"><b>${esc(h.label)}:</b> ${esc(h.value)}</span>`).join("")}</div>` : ""}
+      ${g.lines?.length ? `<ul class="album-facts">${g.lines.map((l) => `<li>${esc(l)}</li>`).join("")}</ul>` : ""}
+      ${g.images?.length ? `<div class="g-images">${g.images.slice(0, 6).map((url) => `<img src="${esc(url)}" alt="" loading="lazy" decoding="async">`).join("")}</div>` : ""}</article>`,
+    )
+    .join("")}</section>`;
 }
 
 function chapter(c) {
@@ -196,11 +247,14 @@ export function renderAlbum() {
     ${hero(album)}
     ${statsBlock(album)}
     ${awardsBlock(album)}
+    ${perPersonBlock(album)}
+    ${daySummary(album)}
     ${overview}
     ${album.chapters.map(chapter).join("")}
     ${expenses(album)}
     ${ledgerBlock(album)}
     ${foodBlock(album)}
+    ${gamesBlock(album)}
     ${orphans}
     <p class="album-foot">Álbum generado automáticamente el ${esc(safeFormat(fmtStamp, album.generatedAt))} a partir de ${plural(album.stats.activities, "actividad", "actividades")}, ${plural(album.stats.photos, "foto", "fotos")} y ${plural(album.stats.comments, "comentario", "comentarios")}.</p>
   </div>`;

@@ -3,11 +3,11 @@ import { createStore, getName, setName } from "./store.js";
 import { createMap } from "./map.js";
 import { prepareImage } from "./images.js";
 import { icon } from "./icons.js";
-import { $, $$, esc, guarded, toast, hasCoords, reducedMotion, schemaHint, authHint, utc, capitalize, fmtDayShort } from "./util.js";
+import { $, $$, esc, guarded, toast, hasCoords, reducedMotion, schemaHint, authHint, utc, capitalize, fmtDayShort, todayIso } from "./util.js";
 import { allDays, locatedStops, stopsOfDay, currentRoutes, onRoutesChange, photosNewestFirst, dayTargets, friendsNow } from "./trip.js";
 import { loadWeather } from "./weather.js";
 import { startSharing, stopSharing } from "./live.js";
-import { cityName } from "./places.js";
+import { cityName, nearbyWiki } from "./places.js";
 import { currentPosition } from "./geo.js";
 import { settings, onSettingChange } from "./settings.js";
 import { renderHeader, renderPlan, renderPhotos, renderFood, renderChips, renderSheet, gate } from "./views.js";
@@ -20,6 +20,10 @@ import { initDiscover, openDiscover } from "./discover.js";
 import { initAccess, openAccess, refreshAccess } from "./accessdialog.js";
 import { startPresence, stopPresence, refreshPeople } from "./presence.js";
 import { initPeople, refreshPeopleDialog } from "./people.js";
+import { renderJuegos, gameActions, syncGames, gameEvent } from "./juegos/index.js";
+import { commentActions, submitComment, deleteComment, cancelRecordings, commentsOf, withReplies, attachmentsOf, removeAttachments } from "./comments.js";
+import { pickFiles } from "./media.js";
+import { ideasActions } from "./ideas.js";
 import { renderAlbum, hydrateAlbum, stopHydrating } from "./albumview.js";
 
 const main = $("#main");
@@ -44,7 +48,7 @@ function readSnapshot() {
 // fotos caducan, así que no se guardan).
 function saveSnapshot() {
   const photos = state.photos.map(({ full_url, thumb_url, ...meta }) => meta);
-  persist(SNAPSHOT_KEY, { activities: state.activities, comments: state.comments, photos, expenses: state.expenses, checklist: state.checklist, member: true });
+  persist(SNAPSHOT_KEY, { activities: state.activities, comments: state.comments, photos, expenses: state.expenses, checklist: state.checklist, member: true }); // los audios no: sus enlaces caducan
 }
 
 const isNetworkError = (err) => err instanceof TypeError || /fetch|network|failed to/i.test(err?.message || "");
@@ -53,7 +57,7 @@ async function refresh() {
   const supabase = ctx.store.mode === "supabase";
   try {
     if (supabase && !ctx.store.user) {
-      Object.assign(state, { activities: [], comments: [], photos: [], expenses: [], checklist: [], isAdmin: false, requests: [], myRequest: null, member: true, offline: false });
+      Object.assign(state, { activities: [], comments: [], photos: [], audios: [], expenses: [], checklist: [], isAdmin: false, requests: [], myRequest: null, member: true, offline: false });
       localStorage.removeItem(SNAPSHOT_KEY);
     } else {
       Object.assign(state, await ctx.store.load(), { offline: false });
@@ -156,14 +160,18 @@ function gateHtml() {
   return "";
 }
 
-let renderedView = null;
+let renderedKey = null;
+let renderDeferred = false;
 let mapWasVisible = false;
 let mapFitted = false;
 
-function render() {
+function render({ user = false } = {}) {
   renderHeader();
   const gated = gateHtml();
   const view = gated ? "gate" : state.view;
+  // El Plan tiene subpestañas (días, comida, cuentas, maleta): cada una cuenta como una vista distinta.
+  const viewKey = view === "plan" ? `plan:${state.planTab}` : view;
+  if (renderedKey !== null && renderedKey !== viewKey) cancelRecordings(); // al cambiar de sección no se sigue grabando
   document.body.dataset.view = view;
   const tabbar = $("#tabbar");
   tabbar.style.setProperty("--tab-i", Math.max(0, VIEWS.indexOf(state.view)));
@@ -173,6 +181,20 @@ function render() {
   }
 
   const showMap = view === "map";
+  // Si suena una nota de voz, el repintado espera a que termine o se pause (si no, se cortaría el audio cada vez que alguien escribe).
+  const playing = [...document.querySelectorAll("#main audio, #lightbox audio")].find((a) => !a.paused && !a.ended);
+  if (playing && !user && !showMap && renderedKey === viewKey) {
+    if (!renderDeferred) {
+      renderDeferred = true;
+      const flush = () => {
+        renderDeferred = false;
+        render();
+      };
+      playing.addEventListener("pause", flush, { once: true });
+      playing.addEventListener("ended", flush, { once: true });
+    }
+    return;
+  }
   mapView.hidden = !showMap;
   main.hidden = showMap;
   if (!showMap && mapWasVisible) {
@@ -184,11 +206,14 @@ function render() {
     renderMapView(!mapWasVisible);
   } else {
     // Un refresco remoto no debe quitarle el foco a quien está escribiendo un comentario.
-    const typingId = document.activeElement?.closest?.(".comment-form")?.dataset.activity;
+    const typingId = document.activeElement?.closest?.(".comment-form")?.dataset.key;
     const typingPack = Boolean(document.activeElement?.matches?.(".pack-form input[name=text]"));
+    // Los juegos marcan con data-keep los campos que no deben perder lo escrito ni el foco cuando se repinta la página.
+    const field = document.activeElement;
+    const keep = field?.dataset?.keep && main.contains(field) ? { id: field.dataset.keep, value: field.value, from: field.selectionStart, to: field.selectionEnd } : null;
     let html = gated;
     try {
-      html ||= { plan: renderPlan, photos: renderPhotos, food: renderFood, album: renderAlbum }[view]();
+      html ||= { plan: renderPlan, photos: renderPhotos, games: renderJuegos, album: renderAlbum }[view]();
     } catch (err) {
       // Un dato raro no debe dejar la sección en blanco.
       console.error(err);
@@ -199,9 +224,21 @@ function render() {
     if (view === "album") hydrateAlbum(main);
     else stopHydrating();
     if (typingId) {
-      const input = main.querySelector(`.comment-form[data-activity="${CSS.escape(typingId)}"] input`);
+      const input = main.querySelector(`.comment-form[data-key="${CSS.escape(typingId)}"] input[name=body]`);
       input?.focus();
       input?.setSelectionRange(input.value.length, input.value.length);
+    }
+    if (keep) {
+      const input = main.querySelector(`[data-keep="${CSS.escape(keep.id)}"]`);
+      if (input) {
+        input.value = keep.value;
+        input.focus();
+        try {
+          input.setSelectionRange(keep.from, keep.to);
+        } catch {
+          /* campos sin selección (número, fecha…) */
+        }
+      }
     }
     if (typingPack) {
       const input = main.querySelector(".pack-form input[name=text]");
@@ -209,15 +246,16 @@ function render() {
       input?.setSelectionRange(input.value.length, input.value.length);
     }
     main.classList.remove("enter");
-    if (renderedView !== view) {
+    if (renderedKey !== viewKey) {
       void main.offsetWidth; // reinicia las animaciones de entrada solo al cambiar de vista
       main.classList.add("enter");
     }
   }
   mapWasVisible = showMap;
-  renderedView = view;
+  renderedKey = viewKey;
   refreshLightbox();
   refreshAccess();
+  syncGames();
 }
 
 // ---------- datos automáticos: tiempo y ciudad de cada día ----------
@@ -235,6 +273,7 @@ async function refreshEnvironment() {
   try {
     state.weather = await loadWeather(targets);
     render();
+    loadFact(targets);
     // Las ciudades van de una en una (Nominatim pide ir despacio) y se guardan en el navegador.
     for (const t of targets) {
       if (key !== environmentKey) return; // los datos cambiaron mientras tanto
@@ -249,6 +288,20 @@ async function refreshEnvironment() {
     console.warn("Datos automáticos no disponibles:", err.message || err);
     environmentKey = ""; // se reintenta en el próximo refresco
   }
+}
+
+// Una curiosidad de Wikipedia sobre la zona del día en que se dan ideas (hoy, o el primer día antes del viaje).
+function loadFact(targets) {
+  const today = todayIso();
+  const target = targets.find((t) => t.day === today) ?? targets.find((t) => t.day >= today) ?? targets[0];
+  if (!target || state.facts[target.day]) return;
+  nearbyWiki(target.lat, target.lng, 1)
+    .then((items) => {
+      if (!items[0]) return;
+      state.facts[target.day] = { ...items[0], extract: items[0].extract.length > 200 ? `${items[0].extract.slice(0, 197).replace(/\s+\S*$/, "")}…` : items[0].extract };
+      if (state.view === "plan" && state.planTab === "days") render();
+    })
+    .catch(() => {});
 }
 
 // Filtro del itinerario: oculta tarjetas y días sin repintar (así no se pierde el foco al escribir).
@@ -454,14 +507,28 @@ const actions = {
   edit: ({ id }) => openActivity({ id }),
   delete: async ({ id }) => {
     const a = state.activities.find((x) => x.id === id);
-    if (confirm(`¿Borrar «${a?.title}»? También se borrarán sus comentarios.`)) {
+    if (confirm(`¿Borrar «${a?.title}»? También se borrarán sus comentarios y sus notas de voz.`)) {
+      // La base de datos borra las filas (comentarios y audios) pero no los archivos, ni las fotos que vinieron en los
+      // comentarios: se apuntan antes y se quitan después de borrar la actividad (si esta falla, no se pierde nada).
+      const comments = withReplies(commentsOf("activity", id));
+      const { photos, audios } = attachmentsOf(comments);
+      for (const audio of state.audios.filter((x) => x.activity_id === id)) if (!audios.includes(audio)) audios.push(audio);
       await ctx.store.deleteActivity(id);
+      await removeAttachments({ photos, audios });
       await refresh();
     }
   },
-  "del-comment": async ({ id }) => {
-    await ctx.store.deleteComment(id);
+  "del-comment": ({ id }) => deleteComment(id),
+  "del-audio": async ({ id }) => {
+    const audio = state.audios.find((a) => a.id === id);
+    if (!audio || !confirm("¿Borrar esta nota de voz?")) return;
+    await ctx.store.deleteAudio(audio);
     await refresh();
+  },
+  camera: async () => {
+    if (!requireName()) return;
+    const files = await pickFiles({ camera: true });
+    if (files.length) await uploadFiles(files, { locate: true });
   },
   "show-on-map": ({ id }) => focusStopOnMap(id),
   "day-on-map": ({ day }) => {
@@ -516,7 +583,12 @@ const actions = {
   "plan-tab": ({ tab }) => setView("plan", tab),
   "go-expenses": () => setView("plan", "expenses"),
   "go-map": () => setView("map"),
-  "add-expense": () => openExpense(),
+  "add-expense": () => openExpense({ kind: "gasto" }),
+  "add-purchase": () => openExpense({ kind: "compra" }),
+  "cuentas-filter": ({ kind }) => {
+    state.cuentas = kind;
+    render();
+  },
   "edit-expense": ({ id }) => openExpense({ id }),
   "split-activity": ({ id }) => openExpense({ fromActivity: id }),
   "share-ledger": () => shareText(ledgerText(), "Cuentas del viaje"),
@@ -543,6 +615,8 @@ const actions = {
 };
 
 let packBusy = false; // un segundo toque mientras se guarda no debe repetir los elementos
+Object.assign(actions, gameActions, commentActions, ideasActions);
+
 async function addPackItems(texts, assigned_to = null) {
   if (packBusy) return 0;
   packBusy = true;
@@ -602,6 +676,7 @@ $(".map-ui").addEventListener("keydown", (event) => {
 main.addEventListener(
   "submit",
   guarded(async (event) => {
+    if (await gameEvent("onSubmit", event)) return;
     const loginForm = event.target.closest(".login-form");
     if (loginForm) {
       event.preventDefault();
@@ -658,20 +733,16 @@ main.addEventListener(
     if (!form) return;
     event.preventDefault();
     if (!requireName()) return;
-    const id = form.dataset.activity;
-    const body = form.body.value.trim();
-    if (!body) return;
-    await ctx.store.addComment(id, body);
-    delete state.drafts[id];
-    state.open.add(id);
-    await refresh();
+    await submitComment(form);
   }),
 );
 // La persona elegida en "quién lo lleva" también se conserva si la página se repinta (p. ej. por un cambio ajeno).
 main.addEventListener("change", (event) => {
+  gameEvent("onChange", event);
   if (event.target.closest(".pack-form") && event.target.name === "assigned_to") state.drafts.packWho = event.target.value;
 });
 main.addEventListener("input", (event) => {
+  gameEvent("onInput", event);
   if (event.target.id === "plan-search") {
     state.filter.q = event.target.value;
     applyPlanFilter();
@@ -680,7 +751,7 @@ main.addEventListener("input", (event) => {
   if (event.target.closest(".login-form")) state.drafts[`login_${event.target.name}`] = event.target.value;
   if (event.target.closest(".pack-form") && event.target.name === "text") state.drafts.pack = event.target.value;
   const form = event.target.closest(".comment-form");
-  if (form) state.drafts[form.dataset.activity] = event.target.value;
+  if (form) state.drafts[form.dataset.key] = event.target.value;
 });
 // "toggle" no burbujea, por eso se escucha en la fase de captura.
 main.addEventListener(
@@ -695,7 +766,7 @@ main.addEventListener(
 );
 
 // pestañas
-const TABS = { map: ["map", "Mapa"], plan: ["calendar", "Itinerario"], photos: ["camera", "Fotos"], food: ["food", "Comida"], album: ["book", "Álbum"] };
+const TABS = { map: ["map", "Mapa"], plan: ["calendar", "Itinerario"], photos: ["camera", "Fotos"], games: ["gamepad", "Juegos"], album: ["book", "Álbum"] };
 for (const tab of $$(".tab")) {
   const [ico, label] = TABS[tab.dataset.view];
   tab.innerHTML = `${icon(ico, 22)}<span>${label}</span>`;
@@ -709,6 +780,25 @@ $("#fab-layers").innerHTML = icon("layers", 22);
 $("#fab-discover").innerHTML = icon("compass", 22);
 
 // controles del mapa
+// El visor de fotos tiene sus propios comentarios (con las mismas acciones, envío y borradores que los de la página).
+const lightboxEl = $("#lightbox");
+lightboxEl.addEventListener("click", onAction);
+lightboxEl.addEventListener(
+  "submit",
+  guarded(async (event) => {
+    const form = event.target.closest(".comment-form");
+    if (!form) return;
+    event.preventDefault();
+    if (!requireName()) return;
+    await submitComment(form);
+  }),
+);
+lightboxEl.addEventListener("input", (event) => {
+  const form = event.target.closest(".comment-form");
+  if (form) state.drafts[form.dataset.key] = event.target.value;
+});
+lightboxEl.addEventListener("toggle", (event) => (event.target.open ? state.open.add(event.target.dataset?.id) : state.open.delete(event.target.dataset?.id)), true);
+
 $("#fab-play").addEventListener("click", guarded(togglePlay));
 $("#fab-fit").addEventListener("click", () => selectDay(null));
 $("#fab-discover").addEventListener("click", () => openDiscover());
@@ -752,7 +842,14 @@ document.addEventListener("keydown", (event) => {
 });
 
 // subida de fotos (desde el selector o desde "Compartir" en la galería del móvil)
-async function uploadFiles(files) {
+// «Reto del día»: se hace la foto con la cámara y se sube con el reto como pie de foto.
+async function cameraChallenge(text) {
+  if (!requireName()) return;
+  const files = await pickFiles({ camera: true });
+  if (files.length) await uploadFiles(files, { locate: true, caption: `Reto: ${text}` });
+}
+
+async function uploadFiles(files, { locate = false, caption = null } = {}) {
   const failed = [];
   let uploaded = 0;
   let located = 0;
@@ -760,8 +857,14 @@ async function uploadFiles(files) {
     toast(`Subiendo foto ${i + 1} de ${files.length}…`, 60000);
     try {
       const prepared = await prepareImage(file);
+      // Una foto hecha con la cámara no siempre trae ubicación: se usa la del móvil en ese momento (si hay permiso).
+      if (locate && !hasCoords(prepared)) {
+        const here = await Promise.race([currentPosition().catch(() => null), new Promise((r) => setTimeout(r, 4000))]);
+        if (here) Object.assign(prepared, { lat: here.lat, lng: here.lng });
+      }
       try {
-        await ctx.store.addPhoto(prepared);
+        const id = await ctx.store.addPhoto(prepared);
+        if (caption) await ctx.store.updatePhoto(id, { caption }).catch(() => {}); // el pie de foto es un extra: si falla, la foto queda igual
       } catch (err) {
         throw schemaHint(err);
       }
@@ -924,7 +1027,7 @@ initAccess();
 initPeople();
 
 try {
-  ctx.actions = { refresh, render, pickOnMap, focusPhotoOnMap, exportPdf, resumeSharedPlace, setSharing, focusPerson, showCodeStep: (email) => { state.loginEmail = email; state.loginStep = "code"; render(); } };
+  ctx.actions = { openDiscover, cameraChallenge, refresh, render, pickOnMap, focusPhotoOnMap, exportPdf, resumeSharedPlace, setSharing, focusPerson, showCodeStep: (email) => { state.loginEmail = email; state.loginStep = "code"; render(); } };
   ctx.store = await createStore(scheduleRefresh, schedulePeople);
   ctx.map = createMap({
     container: $("#map"),

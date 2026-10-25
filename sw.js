@@ -8,7 +8,8 @@ const SHARE = "viaje-compartido"; // fotos recibidas desde la galería del móvi
 const SHELL_FILES = [
   "./", "index.html", "css/styles.css", "manifest.webmanifest", "icons/icon.svg",
   "js/album.js", "js/albumview.js", "js/mapimage.js", "js/pdf.js", "js/settings.js", "js/weather.js", "js/places.js", "js/live.js",
-  "js/accessdialog.js", "js/people.js", "js/presence.js", "js/ledger.js", "js/extras.js", "js/expensedialog.js", "js/share.js", "js/discover.js",
+  "js/juegos/index.js", "js/juegos/batalla.js", "js/juegos/bolsa.js", "js/juegos/bingo.js",
+  "css/juegos.css", "css/juego-batalla.css", "css/juego-bolsa.css", "css/juego-bingo.css", "js/ideas.js", "js/media.js", "js/comments.js", "js/attach.js", "js/accessdialog.js", "js/people.js", "js/presence.js", "js/ledger.js", "js/extras.js", "js/expensedialog.js", "js/share.js", "js/discover.js",
   "js/app.js", "js/config.js", "js/dialogs.js", "js/export.js", "js/geo.js", "js/icons.js",
   "js/images.js", "js/map.js", "js/state.js", "js/store.js", "js/trip.js", "js/util.js", "js/views.js",
 ];

@@ -2,7 +2,7 @@
 import { config } from "./config.js";
 import { state } from "./state.js";
 import { esc, categoryOf, download, slug, toast, hasCoords } from "./util.js";
-import { currentRoutes, locatedStops, photoTime, photosNewestFirst } from "./trip.js";
+import { currentRoutes, locatedStops, photoTime, photosNewestFirst, tripPhotos } from "./trip.js";
 import { shares, isValid } from "./ledger.js";
 
 const { trip } = config;
@@ -47,12 +47,12 @@ export function exportCsv() {
 
 // Gastos repartidos: una fila por gasto, con quién pagó, entre quién se reparte y lo que le toca a cada uno.
 export function exportExpensesCsv() {
-  const header = ["dia", "concepto", "importe", "pago", "reparto", "autor"];
+  const header = ["dia", "tipo", "concepto", "tienda", "importe", "pago", "reparto", "autor"];
   const rows = [...state.expenses]
     .filter(isValid)
     .sort((a, b) => a.day.localeCompare(b.day) || a.created_at.localeCompare(b.created_at))
     // "reparto" usa el mismo cálculo que la web (en céntimos), no importe / personas: 10 € entre 3 son 3,34 + 3,33 + 3,33.
-    .map((e) => [e.day, e.title, num(Number(e.amount)), e.paid_by, [...shares(e)].map(([name, c]) => `${name}: ${num((c / 100).toFixed(2))}`).join("; "), e.created_by_name]);
+    .map((e) => [e.day, e.kind === "compra" ? "compra" : "gasto", e.title, e.place, num(Number(e.amount)), e.paid_by, [...shares(e)].map(([name, c]) => `${name}: ${num((c / 100).toFixed(2))}`).join("; "), e.created_by_name]);
   if (!rows.length) throw new Error("Todavía no hay gastos repartidos que exportar.");
   const text = [header, ...rows].map((r) => r.map(csvCell).join(";")).join("\r\n");
   download(`${baseName()}-gastos-${stamp()}.csv`, "text/csv", `﻿${text}`);
@@ -88,7 +88,7 @@ export function exportGeoJson() {
     ...locatedStops().map((s) =>
       point(s.lng, s.lat, { tipo: "lugar", titulo: s.title, dia: s.day, hora: s.start_time?.slice(0, 5) ?? null, categoria: s.category, lugar: s.place, coste: s.cost, valoracion: s.rating }),
     ),
-    ...state.photos.filter(hasCoords).map((p) => point(p.lng, p.lat, { tipo: "foto", id: p.id, fecha: photoTime(p), autor: p.created_by_name })),
+    ...tripPhotos().filter(hasCoords).map((p) => point(p.lng, p.lat, { tipo: "foto", id: p.id, fecha: photoTime(p), autor: p.created_by_name })),
     ...currentRoutes().map((r) => ({
       type: "Feature",
       properties: { tipo: "ruta", dia: r.day, km: Number(r.km.toFixed(1)), por_carretera: r.road },

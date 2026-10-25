@@ -33,6 +33,7 @@ const PATHS = {
   book: '<path d="M5 4.5A1.5 1.5 0 0 1 6.5 3H19v15H6.5A1.5 1.5 0 0 0 5 19.5z"/><path d="M5 19.5A1.5 1.5 0 0 0 6.5 21H19v-3"/><path d="M9.5 7.5h6M9.5 11h4"/>',
   car: '<path d="M5 16.5V12l1.6-4.2A2 2 0 0 1 8.5 6.5h7a2 2 0 0 1 1.9 1.3L19 12v4.5M3.5 16.5h17M7.5 16.5v2M16.5 16.5v2"/><circle cx="8" cy="13" r=".9" fill="currentColor"/><circle cx="16" cy="13" r=".9" fill="currentColor"/>',
   users: '<circle cx="9" cy="8.5" r="3.2"/><path d="M3.5 19.5c.5-3.3 2.7-5.2 5.5-5.2s5 1.9 5.5 5.2"/><circle cx="17" cy="9.5" r="2.5"/><path d="M16.2 14.6c2.5-.2 4.4 1.4 4.9 4.3"/>',
+  gamepad: '<path d="M7 8h10a4.5 4.5 0 0 1 4.4 5.4l-.7 3.3a2.4 2.4 0 0 1-4 1.2L14 15.5h-4l-2.7 2.4a2.4 2.4 0 0 1-4-1.2l-.7-3.3A4.5 4.5 0 0 1 7 8z"/><path d="M8 10.5v3M6.5 12h3"/><circle cx="15.5" cy="11" r=".8" fill="currentColor"/><circle cx="17.5" cy="13" r=".8" fill="currentColor"/>',
   wallet: '<path d="M4 7.5A2.5 2.5 0 0 1 6.5 5H17a2 2 0 0 1 2 2v1"/><path d="M4 7.5v10A2.5 2.5 0 0 0 6.5 20H18a2 2 0 0 0 2-2v-8a1.5 1.5 0 0 0-1.5-1.5h-12A2.5 2.5 0 0 1 4 7.5z"/><circle cx="15.5" cy="14" r="1.2" fill="currentColor"/>',
   bag: '<rect x="4" y="7.5" width="16" height="12.5" rx="3"/><path d="M9 7.5V6a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v1.5M4 13h16M10.5 13v1.5h3V13"/>',
   check: '<path d="m5 12.5 4.5 4.5L19 7.5"/>',
