@@ -10,6 +10,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-title" content="Viaje">
+  <meta name="format-detection" content="telephone=no">
   <script>
     // Red de seguridad: GitHub Pages permite que el navegador guarde los archivos 10 minutos, así que tras una
     // actualización puede cargar esta página nueva con CSS o JS viejos y no arrancar. Si la app no avisa de que ha
@@ -46,6 +47,7 @@
     </div>
     <div class="appbar-actions">
       <button type="button" id="live-chip" class="live-chip" hidden aria-label="Estás compartiendo tu ubicación. Pulsa para dejar de compartir"><span class="live-dot"></span>En vivo</button>
+      <button type="button" id="people-btn" class="people-btn" hidden aria-label="Viajeros: quién está en línea" title="Viajeros: quién está en línea"><span class="online-dot" aria-hidden="true"></span><span class="people-ico" aria-hidden="true"></span><span id="people-count">0</span><span class="lbl">en línea</span></button>
       <button type="button" id="data-btn" class="icon-btn" aria-label="Datos y móvil" title="Datos y móvil"></button>
       <button type="button" id="session-btn" class="avatar" aria-label="Perfil">?</button>
     </div>
@@ -201,6 +203,14 @@
     <div class="segmented" id="discover-kind" role="group" aria-label="Qué buscar"></div>
     <ul id="discover-list" class="discover-list" aria-live="polite"></ul>
     <p class="hint credits">Datos de OpenStreetMap (licencia ODbL) con Nominatim. Pueden faltar sitios o estar desactualizados.</p>
+  </dialog>
+
+  <dialog id="people-dialog">
+    <div class="dialog-head">
+      <h2>Viajeros</h2>
+      <button type="button" class="icon-btn" data-close aria-label="Cerrar" data-icon="x"></button>
+    </div>
+    <div id="people-body"></div>
   </dialog>
 
   <dialog id="access-dialog">

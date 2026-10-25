@@ -2,7 +2,7 @@
 import { config } from "./config.js";
 import { state, ctx } from "./state.js";
 import { icon } from "./icons.js";
-import { $, $$, esc, hasCoords, CATEGORIES, guarded, toast, schemaHint, fmtStamp, fmtStampWallClock } from "./util.js";
+import { $, $$, esc, hasCoords, CATEGORIES, guarded, toast, schemaHint, authHint, fmtStamp, fmtStampWallClock } from "./util.js";
 import { getName, setName } from "./store.js";
 import { defaultDay, photoTime, photosNewestFirst } from "./trip.js";
 import { currentPosition, nearest, reversePlace, searchPlaces } from "./geo.js";
@@ -31,7 +31,9 @@ export function openProfile() {
   $("#profile-title").textContent = needsEmail ? "Entrar" : "Tu perfil";
   $("#profile-hint").textContent = needsEmail
     ? "Te enviaremos un enlace al correo; ábrelo en este mismo dispositivo."
-    : "Tu nombre aparece junto a lo que añades y comentas.";
+    : signedIn
+      ? `Has entrado como ${ctx.store.user.email}. La sesión se queda guardada en este dispositivo: no hace falta volver a entrar.`
+      : "Tu nombre aparece junto a lo que añades y comentas.";
   $("#profile-submit").textContent = needsEmail ? "Enviar enlace" : "Guardar";
   profileDialog.showModal();
 }
@@ -494,7 +496,12 @@ export function initDialogs() {
       const f = new FormData(profileForm);
       setName(f.get("name").trim());
       if (ctx.store.mode === "supabase" && !ctx.store.user) {
-        await ctx.store.signIn(f.get("email").trim());
+        try {
+          await ctx.store.signIn(f.get("email").trim());
+        } catch (err) {
+          throw authHint(err);
+        }
+        ctx.actions.showCodeStep?.(f.get("email").trim().toLowerCase());
         toast("Listo: revisa tu correo y abre el enlace de acceso.");
       }
       profileDialog.close();
@@ -505,6 +512,7 @@ export function initDialogs() {
   $("#signout-btn").addEventListener(
     "click",
     guarded(async () => {
+      await ctx.store.stopHeartbeat?.().catch(() => {}); // deja de aparecer en línea antes de cerrar la sesión
       await ctx.store.signOut();
       profileDialog.close();
     }),

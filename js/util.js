@@ -66,6 +66,16 @@ export const formatDuration = (minutes) => {
   const m = total % 60;
   return h ? `${h} h ${String(m).padStart(2, "0")} min` : `${m} min`;
 };
+// "ahora mismo", "hace 5 min", "hace 3 h", "hace 2 días" a partir de una marca de tiempo en milisegundos.
+export function ago(ms) {
+  const min = Math.floor((Date.now() - ms) / 60_000);
+  if (min < 1) return "ahora mismo";
+  if (min < 60) return `hace ${min} min`;
+  const hours = Math.floor(min / 60);
+  if (hours < 24) return `hace ${hours} h`;
+  const days = Math.floor(hours / 24);
+  return `hace ${days} ${days === 1 ? "día" : "días"}`;
+}
 export const stars = (n) => "★".repeat(n) + "☆".repeat(5 - n);
 
 export function toast(message, ms = 5000) {
@@ -113,6 +123,17 @@ export function schemaHint(err) {
   if (/column|schema cache/i.test(message) && /lat|lng|rating|taken_at/i.test(message)) {
     return new Error("Falta ejecutar supabase/mapa.sql en Supabase (columnas nuevas de ubicación y valoración).");
   }
+  return err;
+}
+
+// Errores al pedir el correo de acceso, con la causa real y qué hacer.
+export function authHint(err) {
+  const message = err?.message || String(err);
+  if (/not authorized/i.test(message)) {
+    return new Error("El servicio de correo de Supabase solo envía a quien administra el proyecto. Para que entre más gente hay que configurar un servidor de correo propio (ver docs/DESPLIEGUE.md, «Correo de acceso»).");
+  }
+  if (/rate limit/i.test(message)) return new Error("Se han pedido demasiados correos en poco tiempo. Espera unos minutos e inténtalo de nuevo.");
+  if (/error sending|smtp/i.test(message)) return new Error("Supabase no pudo enviar el correo. Revisa la configuración del servidor de correo (ver docs/DESPLIEGUE.md).");
   return err;
 }
 

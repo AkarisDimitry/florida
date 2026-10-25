@@ -6,6 +6,7 @@ const DEFAULTS = {
   temperature: "c", // c | f
   theme: "auto", // auto | light | dark
   animations: "auto", // auto (sigue al sistema) | off
+  showOnline: true, // aparecer "en línea" para los demás viajeros
   accent: "ocean", // ocean | sunset | forest | grape | rose
   pdfMaps: true,
   pdfComments: true,

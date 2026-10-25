@@ -13,9 +13,10 @@ export const setName = (name) => {
   try { localStorage.setItem(NAME_KEY, name); } catch { /* sin almacenamiento: se pedirá de nuevo */ }
 };
 
-export async function createStore(onChange) {
+// onChange: cambió algo importante (se recarga todo). onPeople: solo cambió quién está en línea o dónde está (recarga ligera).
+export async function createStore(onChange, onPeople = onChange) {
   const { url, anonKey } = config.supabase;
-  return url && anonKey ? supabaseStore(onChange) : localStore(onChange);
+  return url && anonKey ? supabaseStore(onChange, onPeople) : localStore(onChange);
 }
 
 const blobToDataUrl = (blob) =>
@@ -49,12 +50,18 @@ function localStore(onChange) {
     mode: "demo",
     user: { id: "local", email: null },
     async signIn() {},
+    async verifyCode() {},
     async signOut() {},
     async shareLocation() {},
     async stopSharing() {},
+    async heartbeat() {},
+    async stopHeartbeat() {},
+    async loadPeople() {
+      return { live: [], presence: [], presenceOn: false };
+    },
     async load() {
       const photos = read(PHO).sort((a, b) => b.created_at.localeCompare(a.created_at));
-      return { activities: read(ACT), comments: read(COM), photos, live: [], expenses: read(EXP), checklist: read(PCK), extras: true, isAdmin: false, requests: [], myRequest: null, access: false, member: true };
+      return { activities: read(ACT), comments: read(COM), photos, live: [], presence: [], presenceOn: false, expenses: read(EXP), checklist: read(PCK), extras: true, isAdmin: false, requests: [], myRequest: null, access: false, member: true };
     },
     async addPhoto({ full, thumb, lat = null, lng = null, taken_at = null }) {
       const photo = {
@@ -119,9 +126,10 @@ function localStore(onChange) {
   };
 }
 
-async function supabaseStore(onChange) {
+async function supabaseStore(onChange, onPeople) {
   const { createClient } = await import(SUPABASE_ESM);
-  const sb = createClient(config.supabase.url, config.supabase.anonKey);
+  // La sesión se guarda en este dispositivo y se renueva sola: se entra una vez y no hace falta volver a pedir nada.
+  const sb = createClient(config.supabase.url, config.supabase.anonKey, { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true } });
   const bucket = sb.storage.from("photos");
   const check = ({ data, error }) => {
     if (error) throw error;
@@ -146,14 +154,15 @@ async function supabaseStore(onChange) {
   // Cada tabla opcional tiene su propio canal y solo se escucha si existe: una suscripción a una tabla que falta
   // podría hacer fallar todo el canal, y las actividades, comentarios y fotos no deben depender de ellas.
   const available = { live: false, extras: false, access: false };
-  const lastOptional = { live_locations: [], expenses: [], checklist_items: [], access_requests: [] };
+  const lastOptional = { live_locations: [], presence: [], expenses: [], checklist_items: [], access_requests: [] };
   const subscribed = new Set();
   function subscribeOptional() {
     for (const [group, tables] of [["live", ["live_locations"]], ["extras", ["expenses", "checklist_items"]], ["access", ["access_requests"]]]) {
       if (!available[group] || subscribed.has(group)) continue;
       subscribed.add(group);
       let channel = sb.channel(`viaje-${group}`);
-      for (const table of tables) channel = channel.on("postgres_changes", { event: "*", schema: "public", table }, onChange);
+      // Las posiciones en vivo llegan cada pocos segundos: solo se refresca la lista de personas, no todos los datos.
+      for (const table of tables) channel = channel.on("postgres_changes", { event: "*", schema: "public", table }, group === "live" ? onPeople : onChange);
       channel.subscribe();
     }
   }
@@ -182,12 +191,20 @@ async function supabaseStore(onChange) {
       const emailRedirectTo = location.origin + location.pathname;
       check(await sb.auth.signInWithOtp({ email, options: { emailRedirectTo } }));
     },
+    // Alternativa al enlace: el código de 6 cifras del mismo correo se escribe dentro de la app. Sirve cuando el enlace se
+    // abre en otro navegador (p. ej. en iPhone la app instalada guarda sus datos aparte de Safari).
+    async verifyCode(email, code) {
+      const { error } = await sb.auth.verifyOtp({ email, token: String(code).replace(/\s+/g, ""), type: "email" });
+      if (error) throw error;
+      // Pide al navegador que no borre la sesión guardada cuando necesite espacio.
+      navigator.storage?.persist?.().catch(() => {});
+    },
     async signOut() {
       await sb.auth.signOut();
     },
     async load() {
       const member = check(await sb.rpc("is_member"));
-      const none = { activities: [], comments: [], photos: [], live: [], expenses: [], checklist: [], extras: true, isAdmin: false, requests: [], myRequest: null };
+      const none = { activities: [], comments: [], photos: [], live: [], presence: [], presenceOn: false, expenses: [], checklist: [], extras: true, isAdmin: false, requests: [], myRequest: null };
       if (!member) {
         // Sin ser miembro solo se ve la propia solicitud de acceso (si acceso.sql está ejecutado).
         const mine = await optional("access_requests");
@@ -195,11 +212,12 @@ async function supabaseStore(onChange) {
         subscribeOptional();
         return { ...none, member: false, access: !mine.missing, myRequest: mine.data?.[0] ?? null };
       }
-      const [activities, comments, rows, live, expenses, checklist] = await Promise.all([
+      const [activities, comments, rows, live, presence, expenses, checklist] = await Promise.all([
         sb.from("activities").select("*").then(check),
         sb.from("comments").select("*").order("created_at").then(check),
         sb.from("photos").select("*").order("created_at", { ascending: false }).then(check),
         optional("live_locations"),
+        optional("presence"),
         optional("expenses", "created_at"),
         optional("checklist_items", "created_at"),
       ]);
@@ -212,7 +230,7 @@ async function supabaseStore(onChange) {
       subscribeOptional();
       const urlOf = await signUrls(rows.flatMap((p) => [p.path, p.thumb_path]));
       const photos = rows.map((p) => ({ ...p, full_url: urlOf(p.path), thumb_url: urlOf(p.thumb_path) }));
-      return { activities, comments, photos, live: live.data ?? [], expenses: expenses.data ?? [], checklist: checklist.data ?? [], extras: !expenses.missing && !checklist.missing, isAdmin, requests: asked.data ?? [], myRequest: null, access: isAdmin || !asked.missing, member: true };
+      return { activities, comments, photos, live: live.data ?? [], presence: presence.data ?? [], presenceOn: !presence.missing, expenses: expenses.data ?? [], checklist: checklist.data ?? [], extras: !expenses.missing && !checklist.missing, isAdmin, requests: asked.data ?? [], myRequest: null, access: isAdmin || !asked.missing, member: true };
     },
     async addPhoto({ full, thumb, lat = null, lng = null, taken_at = null }) {
       const id = crypto.randomUUID();
@@ -267,6 +285,17 @@ async function supabaseStore(onChange) {
     async listMembers() {
       return check(await sb.rpc("list_members"));
     },
+    // Quién está en línea: cada cliente envía un latido cada ~45 s (la hora la pone el servidor) y se consulta cada 30 s.
+    async heartbeat(name) {
+      check(await sb.from("presence").upsert({ user_id: store.user.id, name }, { onConflict: "user_id" }));
+    },
+    async stopHeartbeat() {
+      check(await sb.from("presence").delete().eq("user_id", store.user.id));
+    },
+    async loadPeople() {
+      const [live, presence] = await Promise.all([optional("live_locations"), optional("presence")]);
+      return { live: live.data ?? [], presence: presence.data ?? [], presenceOn: !presence.missing };
+    },
     async shareLocation({ lat, lng, accuracy }) {
       check(await sb.from("live_locations").upsert({ user_id: store.user.id, name: getName(), lat, lng, accuracy: accuracy ?? null }, { onConflict: "user_id" }));
     },
@@ -294,8 +323,9 @@ async function supabaseStore(onChange) {
   };
 
   store.user = (await sb.auth.getSession()).data.session?.user ?? null;
-  sb.auth.onAuthStateChange((_event, session) => {
+  sb.auth.onAuthStateChange((event, session) => {
     store.user = session?.user ?? null;
+    if (event === "SIGNED_IN" && session) navigator.storage?.persist?.().catch(() => {});
     onChange();
   });
   sb.channel("viaje")

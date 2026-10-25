@@ -12,6 +12,7 @@ import { getName } from "./store.js";
 import { describeWeather, packingTips, WEATHER_KIND } from "./weather.js";
 import { buildAlbum, photoDay } from "./album.js";
 import { planNav, renderExpenses, renderPacking } from "./extras.js";
+import { onlineCount } from "./people.js";
 import { totalCents, fromCents } from "./ledger.js";
 
 const { trip } = config;
@@ -34,6 +35,11 @@ export function renderHeader() {
   const name = getName();
   $("#session-btn").textContent = (name || ctx.store?.user?.email || "?").charAt(0).toUpperCase();
   $("#session-btn").title = name || ctx.store?.user?.email || "Entrar";
+
+  // Botón «en línea»: cuántos viajeros hay conectados ahora (solo con la base de datos compartida y presencia.sql).
+  const showPeople = ctx.store?.mode === "supabase" && state.member && state.presenceOn;
+  $("#people-btn").hidden = !showPeople;
+  if (showPeople) $("#people-count").textContent = String(onlineCount());
 
   // Aviso para quien administra: solicitudes de acceso esperando aprobación (también como punto rojo en el avatar).
   const pending = state.isAdmin ? state.requests.filter((r) => r.status === "pending").length : 0;

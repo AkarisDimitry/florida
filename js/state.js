@@ -50,12 +50,16 @@ export const state = {
   weather: new Map(), // día -> tiempo (weather.js)
   places: {}, // día -> ciudad
   live: [], // posiciones compartidas por los viajeros
+  presence: [], // quién está en línea y cuándo se vio por última vez (presencia.sql)
+  presenceOn: false, // false si en Supabase falta ejecutar presencia.sql
   sharing: false, // estoy compartiendo mi ubicación
   me: null, // mi última posición conocida { lat, lng }
   filter: { q: "", cat: "" }, // búsqueda y filtro del itinerario
   selectedStop: null,
   selectedPhoto: null, // foto resaltada en el mapa
   playing: false,
+  loginStep: null, // null (pedir correo) o "code" (esperando el enlace o el código del correo)
+  loginEmail: "",
   pendingShared: null, // texto de un lugar compartido que espera a que la persona ponga su nombre
 
   lightboxId: null,

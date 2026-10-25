@@ -1,16 +1,16 @@
 import { state, ctx, VIEWS, hashOf, viewOfHash, planTabOfHash, persist } from "./state.js";
-import { createStore, getName } from "./store.js";
+import { createStore, getName, setName } from "./store.js";
 import { createMap } from "./map.js";
 import { prepareImage } from "./images.js";
 import { icon } from "./icons.js";
-import { $, $$, esc, guarded, toast, hasCoords, reducedMotion, schemaHint, utc, capitalize, fmtDayShort } from "./util.js";
+import { $, $$, esc, guarded, toast, hasCoords, reducedMotion, schemaHint, authHint, utc, capitalize, fmtDayShort } from "./util.js";
 import { allDays, locatedStops, stopsOfDay, currentRoutes, onRoutesChange, photosNewestFirst, dayTargets, friendsNow } from "./trip.js";
 import { loadWeather } from "./weather.js";
 import { startSharing, stopSharing } from "./live.js";
 import { cityName } from "./places.js";
 import { currentPosition } from "./geo.js";
 import { settings, onSettingChange } from "./settings.js";
-import { renderHeader, renderPlan, renderPhotos, renderFood, renderChips, renderSheet, gate, enterButton } from "./views.js";
+import { renderHeader, renderPlan, renderPhotos, renderFood, renderChips, renderSheet, gate } from "./views.js";
 import { initDialogs, openActivity, openProfile, openPdfOptions, requireName, showPhoto, refreshLightbox } from "./dialogs.js";
 import { initExpenseDialog, openExpense } from "./expensedialog.js";
 import { ledgerText, TYPICAL_ITEMS } from "./extras.js";
@@ -18,6 +18,8 @@ import { canonical } from "./ledger.js";
 import { dayPlanText, parseSharedPlace } from "./share.js";
 import { initDiscover, openDiscover } from "./discover.js";
 import { initAccess, openAccess, refreshAccess } from "./accessdialog.js";
+import { startPresence, stopPresence, refreshPeople } from "./presence.js";
+import { initPeople, refreshPeopleDialog } from "./people.js";
 import { renderAlbum, hydrateAlbum, stopHydrating } from "./albumview.js";
 
 const main = $("#main");
@@ -67,6 +69,30 @@ async function refresh() {
   }
   render();
   refreshEnvironment();
+  syncPresence();
+}
+
+// Solo cambió quién está en línea o dónde está: recarga ligera (no vuelve a pedir actividades, fotos, etc.).
+let peopleTimer;
+const schedulePeople = () => {
+  clearTimeout(peopleTimer);
+  peopleTimer = setTimeout(refreshPeople, 400);
+};
+
+// Repinta solo lo que muestra personas: el botón de la cabecera, los viajeros en el mapa y el panel «Viajeros».
+function applyPeople() {
+  renderHeader();
+  if (state.view === "map" && ctx.map?.ready()) {
+    pushMapData();
+    $("#map-chips").innerHTML = renderChips();
+  }
+  refreshPeopleDialog();
+}
+
+// La presencia solo corre con sesión iniciada y siendo viajero autorizado.
+function syncPresence() {
+  if (ctx.store.mode === "supabase" && ctx.store.user && state.member && state.presenceOn) startPresence(applyPeople);
+  else stopPresence();
 }
 
 let refreshTimer;
@@ -77,10 +103,41 @@ const scheduleRefresh = () => {
 
 // ---------- vistas ----------
 
-function gateHtml() {
-  if (ctx.store.mode === "supabase" && !ctx.store.user) {
-    return gate("Web privada", "Entra con tu correo para ver el viaje. Te enviaremos un enlace de acceso.", enterButton);
+// Pantalla de entrada: nombre y correo en dos campos, sin diálogos. Después, el enlace del correo o su código de 6 cifras.
+const EMAIL_KEY = "viaje.correo";
+const rememberedEmail = () => {
+  try {
+    return localStorage.getItem(EMAIL_KEY) || "";
+  } catch {
+    return "";
   }
+};
+
+function loginGate() {
+  const d = state.drafts;
+  const email = state.loginEmail || d.login_email || rememberedEmail();
+  if (state.loginStep === "code") {
+    return `<div class="gate login"><div class="gate-art">${icon("check", 34)}</div>
+      <h2>Revisa tu correo</h2>
+      <p>Hemos enviado un mensaje a <strong>${esc(email)}</strong> (mira también en «spam»). Pulsa el enlace <strong>desde este mismo móvil</strong>, o escribe aquí el código de 6 cifras que trae.</p>
+      <form class="login-form" data-form="code">
+        <input name="code" inputmode="numeric" autocomplete="one-time-code" enterkeyhint="go" maxlength="10" placeholder="Código del correo" aria-label="Código del correo" required value="${esc(d.login_code || "")}">
+        <button class="btn primary" type="submit">Entrar con el código</button>
+      </form>
+      <button class="link-btn" data-action="login-back">Usar otro correo o enviarlo de nuevo</button></div>`;
+  }
+  return `<div class="gate login"><div class="gate-art">${icon("map", 34)}</div>
+    <h2>Entra al viaje</h2>
+    <p>Escribe tu nombre y tu correo y te enviamos un enlace. <strong>Solo hace falta una vez:</strong> la sesión se queda guardada en este dispositivo.</p>
+    <form class="login-form" data-form="login">
+      <input name="name" maxlength="40" autocomplete="given-name" placeholder="Tu nombre" aria-label="Tu nombre" required value="${esc(d.login_name ?? getName())}">
+      <input name="email" type="email" inputmode="email" autocomplete="email" autocapitalize="off" spellcheck="false" enterkeyhint="send" placeholder="Tu correo" aria-label="Tu correo" required value="${esc(email)}">
+      <button class="btn primary" type="submit">Enviar enlace de acceso</button>
+    </form></div>`;
+}
+
+function gateHtml() {
+  if (ctx.store.mode === "supabase" && !ctx.store.user) return loginGate();
   if (!state.member) {
     const r = state.myRequest;
     let text = `Has entrado como <strong>${esc(ctx.store.user.email)}</strong>, pero ese correo aún no está en la lista de viajeros.`;
@@ -365,6 +422,13 @@ function focusStopOnMap(id) {
   selectStop(id);
 }
 
+// Lleva al mapa a donde ha compartido su ubicación otro viajero.
+function focusPerson(lat, lng) {
+  state.day = null;
+  setView("map");
+  if (ctx.map.ready()) ctx.map.flyTo(lat, lng, 15);
+}
+
 function focusPhotoOnMap(id) {
   const photo = state.photos.find((p) => p.id === id);
   if (!hasCoords(photo)) return;
@@ -429,6 +493,11 @@ const actions = {
   "select-stop": ({ id }) => selectStop(id),
   "cancel-pick": () => ctx.map.cancelPick(),
 
+  "login-back": () => {
+    state.loginStep = null;
+    delete state.drafts.login_code;
+    render();
+  },
   "request-access": async () => {
     if (!requireName()) return;
     try {
@@ -533,6 +602,46 @@ $(".map-ui").addEventListener("keydown", (event) => {
 main.addEventListener(
   "submit",
   guarded(async (event) => {
+    const loginForm = event.target.closest(".login-form");
+    if (loginForm) {
+      event.preventDefault();
+      const button = loginForm.querySelector("button[type=submit]");
+      button.disabled = true;
+      try {
+        if (loginForm.dataset.form === "login") {
+          const name = loginForm.elements.name.value.trim();
+          const email = loginForm.elements.email.value.trim().toLowerCase();
+          if (!name || !email) return;
+          setName(name);
+          try {
+            localStorage.setItem(EMAIL_KEY, email);
+          } catch {
+            /* sin almacenamiento: se escribirá de nuevo */
+          }
+          try {
+            await ctx.store.signIn(email);
+          } catch (err) {
+            throw authHint(err);
+          }
+          state.loginEmail = email;
+          state.loginStep = "code";
+          toast("Enlace enviado. Revisa tu correo.", 6000);
+          render();
+        } else {
+          try {
+            await ctx.store.verifyCode(state.loginEmail || rememberedEmail(), loginForm.elements.code.value);
+          } catch {
+            throw new Error("El código no es correcto o ya caducó. Revisa el último correo o pide uno nuevo.");
+          }
+          state.loginStep = null;
+          delete state.drafts.login_code;
+          toast("¡Listo! Ya has entrado y no hará falta repetirlo.", 4000);
+        }
+      } finally {
+        button.disabled = false;
+      }
+      return;
+    }
     const packForm = event.target.closest(".pack-form");
     if (packForm) {
       event.preventDefault();
@@ -568,6 +677,7 @@ main.addEventListener("input", (event) => {
     applyPlanFilter();
     return;
   }
+  if (event.target.closest(".login-form")) state.drafts[`login_${event.target.name}`] = event.target.value;
   if (event.target.closest(".pack-form") && event.target.name === "text") state.drafts.pack = event.target.value;
   const form = event.target.closest(".comment-form");
   if (form) state.drafts[form.dataset.activity] = event.target.value;
@@ -592,6 +702,7 @@ for (const tab of $$(".tab")) {
   tab.addEventListener("click", () => setView(tab.dataset.view));
 }
 $("#data-btn").innerHTML = icon("more", 22);
+$(".people-ico").innerHTML = icon("users", 17);
 $("#fab-fit").innerHTML = icon("fit", 22);
 $("#fab-locate").innerHTML = icon("locate", 22);
 $("#fab-layers").innerHTML = icon("layers", 22);
@@ -763,6 +874,7 @@ async function setSharing(on) {
     toast(err.message || "No se pudo cambiar la ubicación en vivo");
   }
   syncSharingUi();
+  refreshPeople();
 }
 
 $("#live-switch").addEventListener("change", (event) => setSharing(event.target.checked));
@@ -789,6 +901,11 @@ onSettingChange((key) => {
   if (ctx.store) render();
 });
 
+// Con el teclado del móvil abierto se esconde la barra de pestañas flotante (en CSS), para que no tape el campo.
+const isTextField = (el) => Boolean(el?.matches?.("input:not([type=checkbox]):not([type=radio]):not([type=file]):not([type=button]):not([type=submit]), textarea, select") && !el.closest("dialog"));
+document.addEventListener("focusin", (event) => document.body.classList.toggle("typing", isTextField(event.target)));
+document.addEventListener("focusout", () => setTimeout(() => document.body.classList.toggle("typing", isTextField(document.activeElement)), 60));
+
 // ---------- arranque ----------
 
 document.addEventListener("visibilitychange", () => {
@@ -804,10 +921,11 @@ initDialogs();
 initExpenseDialog();
 initDiscover();
 initAccess();
+initPeople();
 
 try {
-  ctx.actions = { refresh, render, pickOnMap, focusPhotoOnMap, exportPdf, resumeSharedPlace };
-  ctx.store = await createStore(scheduleRefresh);
+  ctx.actions = { refresh, render, pickOnMap, focusPhotoOnMap, exportPdf, resumeSharedPlace, setSharing, focusPerson, showCodeStep: (email) => { state.loginEmail = email; state.loginStep = "code"; render(); } };
+  ctx.store = await createStore(scheduleRefresh, schedulePeople);
   ctx.map = createMap({
     container: $("#map"),
     onStop: selectStop,
