@@ -3,6 +3,8 @@
 import { config } from "./config.js";
 import { reducedMotion, sleep, categoryOf } from "./util.js";
 import { distanceKm, geolocationMessage } from "./geo.js";
+import { createExpensePins } from "./mapgastos.js";
+import { createTrackLayer } from "./maprecorrido.js";
 
 const ML = () => window.maplibregl;
 const EMPTY = { type: "FeatureCollection", features: [] };
@@ -80,6 +82,9 @@ export function createMap({ container, onStop, onPhoto, onLongPress }) {
   const stopPins = new Map(); // id -> { marker, el, sig }
   const photoPins = new Map(); // id de la foto representante -> { marker, el, group }
   const friendPins = new Map(); // id del viajero -> { marker, el }
+  const expensePins = createExpensePins(container); // gastos con ubicación (mapgastos.js)
+  const trackLayer = createTrackLayer(); // recorrido real de cada día (maprecorrido.js)
+  const syncTracks = () => trackLayer.sync(map, data.tracks ?? [], { visible: data.layers.tracks !== false, activeDay: data.activeDay });
   let animToken = 0;
   let animHide = null; // día cuya ruta se oculta mientras se dibuja con animación
   let runner = null;
@@ -125,7 +130,9 @@ export function createMap({ container, onStop, onPhoto, onLongPress }) {
     });
     map.on("style.load", () => {
       addOverlays();
+      trackLayer.add(map);
       applyRoutes();
+      syncTracks();
     });
     map.on("moveend", renderPhotoPins);
     map.on("resize", renderPhotoPins);
@@ -195,6 +202,8 @@ export function createMap({ container, onStop, onPhoto, onLongPress }) {
     syncStopPins();
     renderPhotoPins();
     syncFriendPins();
+    expensePins.sync(map, data.layers.expenses !== false);
+    syncTracks();
   }
 
   function applyRoutes() {
@@ -283,7 +292,7 @@ export function createMap({ container, onStop, onPhoto, onLongPress }) {
       const name = friend.name || "Viajero";
       pin.el.style.setProperty("--h", hue(name));
       pin.el.querySelector(".friend-dot").textContent = name.charAt(0).toUpperCase();
-      pin.el.querySelector(".friend-tag").textContent = `${name} · ${ago(friend.updated_at)}`;
+      pin.el.querySelector(".friend-tag").textContent = `${name} · ${ago(friend.updated_at)}${friend.battery ? ` · ${friend.battery}` : ""}`;
       pin.marker.setLngLat([friend.lng, friend.lat]);
     }
   }
@@ -597,5 +606,6 @@ export function createMap({ container, onStop, onPhoto, onLongPress }) {
     },
     error: () => failure,
     ready: () => Boolean(map),
+    rawMap: () => map, // el mapa de MapLibre, para que otros módulos (encuentro.js) pongan sus propios marcadores
   };
 }

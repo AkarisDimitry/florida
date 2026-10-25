@@ -247,6 +247,8 @@ async function supabaseStore(onChange, onPeople) {
       await sb.auth.signOut();
     },
     async load() {
+      // Sin conexión no se espera a la red (con el token caducado el cliente reintentaría ~30 s): se usa la última copia (app.js).
+      if (navigator.onLine === false) throw new TypeError("Failed to fetch: sin conexión");
       const member = check(await sb.rpc("is_member"));
       const none = { activities: [], comments: [], photos: [], live: [], presence: [], presenceOn: false, audios: [], attach: false, expenses: [], checklist: [], extras: true, isAdmin: false, requests: [], myRequest: null };
       if (!member) {
@@ -280,19 +282,37 @@ async function supabaseStore(onChange, onPeople) {
       const audios = (audioRows.data ?? []).map((a) => ({ ...a, audio_url: audioUrl(a.path) }));
       return { activities, comments, photos, live: live.data ?? [], presence: presence.data ?? [], presenceOn: !presence.missing, audios, attach: !audioRows.missing, expenses: expenses.data ?? [], checklist: checklist.data ?? [], extras: !expenses.missing && !checklist.missing, isAdmin, requests: asked.data ?? [], myRequest: null, access: isAdmin || !asked.missing, member: true };
     },
-    async addPhoto({ full, thumb, lat = null, lng = null, taken_at = null, activity_id = null, expense_id = null }) {
-      const id = crypto.randomUUID();
+    // `id`, `owner`, `filesDone` y `onFiles` (opcionales) los pasa la cola de subida (cola.js) para que sea IDEMPOTENTE: repetir la subida
+    // de la misma foto (porque la respuesta anterior se perdió) usa los mismos archivos y la misma fila, y no duplica nada. `filesDone`
+    // = los dos archivos ya están subidos (no se vuelven a enviar: en una cobertura mala cada reintento costaría cientos de KB);
+    // `onFiles(true|false)` avisa de que los archivos quedaron subidos o se quitaron.
+    async addPhoto({ full, thumb, lat = null, lng = null, taken_at = null, activity_id = null, expense_id = null, id = crypto.randomUUID(), owner = store.user.id, filesDone = false, onFiles = null }) {
       // La carpeta es el id del usuario: las políticas de Storage solo dejan subir y borrar en la propia.
-      const path = `${store.user.id}/${id}.jpg`;
-      const thumb_path = `${store.user.id}/${id}_t.jpg`;
+      const path = `${owner}/${id}.jpg`;
+      const thumb_path = `${owner}/${id}_t.jpg`;
       const contentType = "image/jpeg";
-      check(await bucket.upload(path, full, { contentType }));
-      check(await bucket.upload(thumb_path, thumb, { contentType }));
+      // Sin `upsert`: el SQL no tiene política UPDATE en storage.objects, así que sobrescribir un archivo existente daría «sin
+      // permiso». Si ya existe (un intento anterior lo subió) se da por bueno: el nombre lleva el id único de esta foto.
+      const put = async (to, blob) => {
+        const { error } = await bucket.upload(to, blob, { contentType });
+        if (error && !(error.status === 409 || /already exists|duplicate/i.test(error.message || ""))) throw error;
+      };
+      if (!filesDone) {
+        await put(path, full);
+        await put(thumb_path, thumb);
+      }
+      await onFiles?.(true);
       const row = { id, path, thumb_path, lat, lng, taken_at, created_by_name: getName(), ...(activity_id && { activity_id }), ...(expense_id && { expense_id }) };
-      const { error } = await sb.from("photos").insert(row);
+      const { error, status } = await sb.from("photos").insert(row);
       if (error) {
-        await bucket.remove([path, thumb_path]);
-        throw error;
+        if (error.code === "23505") return id; // la fila ya estaba: un intento anterior sí llegó
+        // Solo se quitan los archivos si la base de datos rechazó la fila con seguridad (4xx). Con un fallo de red no se sabe si
+        // llegó a guardarla, y quitar los archivos dejaría una foto sin imagen. (401 = sesión caducada: se reintenta, no se quita.)
+        if (status >= 400 && status < 500 && ![401, 408, 429].includes(status)) {
+          await bucket.remove([path, thumb_path]);
+          await onFiles?.(false);
+        }
+        throw Object.assign(error, { status });
       }
       return id;
     },
@@ -357,8 +377,16 @@ async function supabaseStore(onChange, onPeople) {
       return check(await sb.rpc("list_members"));
     },
     // Quién está en línea: cada cliente envía un latido cada ~45 s (la hora la pone el servidor) y se consulta cada 30 s.
-    async heartbeat(name) {
-      check(await sb.from("presence").upsert({ user_id: store.user.id, name }, { onConflict: "user_id" }));
+    // `extra` lleva la batería ({ battery, charging }) si el móvil la comparte. Si la base de datos aún no tiene esas columnas
+    // (falta bateria.sql) el latido se repite sin ellas y no se vuelve a intentar con ellas: lo de «en línea» no depende de esto.
+    async heartbeat(name, extra = {}) {
+      const withBattery = store.batteryColumns !== false && Object.keys(extra).length > 0;
+      const { error } = await sb.from("presence").upsert({ user_id: store.user.id, name, ...(withBattery ? extra : {}) }, { onConflict: "user_id" });
+      if (error && withBattery && /battery|charging/i.test(error.message || "")) {
+        store.batteryColumns = false;
+        return this.heartbeat(name);
+      }
+      if (error) throw error;
     },
     async stopHeartbeat() {
       check(await sb.from("presence").delete().eq("user_id", store.user.id));
@@ -412,8 +440,28 @@ async function supabaseStore(onChange, onPeople) {
     },
   };
 
-  store.user = (await sb.auth.getSession()).data.session?.user ?? null;
+  // Sin cobertura y con el token de acceso caducado, getSession() espera unos 30 s reintentando renovarlo: la app no puede quedarse
+  // tanto en blanco. Se espera poco y, si no llega, se arranca con la sesión guardada (así se abre y se pueden encolar fotos).
+  // La sesión se renueva sola al volver la red; solo SIGNED_OUT (token rechazado de verdad) la da por cerrada.
+  let staleStart = false;
+  const stored = () => {
+    try {
+      return JSON.parse(localStorage.getItem(`sb-${new URL(config.supabase.url).hostname.split(".")[0]}-auth-token`))?.user ?? null;
+    } catch {
+      return null;
+    }
+  };
+  const sessionUser = sb.auth.getSession().then((r) => r.data.session?.user ?? null);
+  const slow = Symbol("lenta");
+  const first = await Promise.race([sessionUser, new Promise((resolve) => setTimeout(resolve, 3500, slow))]);
+  if (first === slow && stored()) {
+    staleStart = true;
+    store.user = stored();
+    sessionUser.then((user) => user && (store.user = user), () => {});
+  } else store.user = first === slow ? await sessionUser : first;
   sb.auth.onAuthStateChange((event, session) => {
+    if (!session && event !== "SIGNED_OUT" && staleStart) return;
+    if (session || event === "SIGNED_OUT") staleStart = false;
     store.user = session?.user ?? null;
     if (event === "SIGNED_IN" && session) navigator.storage?.persist?.().catch(() => {});
     onChange();

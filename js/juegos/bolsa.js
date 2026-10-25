@@ -1,20 +1,22 @@
-// Juego «Bolsa de valores»: cada viajero recibe 200.000 $ de mentira y compra y vende 10 activos inventados con temática de
-// viaje. Contrato del módulo en docs/JUEGOS.md; SQL y reglas en supabase/juego_bolsa.sql.
+// Juego «Bolsa de valores»: cada viajero recibe 200.000 $ de dinero ficticio y compra y vende acciones y criptomonedas REALES
+// (Disney, Carnival, Apple, Bitcoin…) a su precio de verdad y en directo. Contrato del módulo en docs/JUEGOS.md; SQL y reglas en
+// supabase/juego_bolsa.sql.
 //
-// Quién manda: la base de datos. Los precios son una función de la hora (market_price), las cuentas y las operaciones solo se
+// Quién manda: la base de datos. Los precios los pide ella misma a Yahoo Finance cada minuto (pg_cron + pg_net: el navegador no
+// puede, Yahoo no admite peticiones desde una web) y solo se opera si el precio es fresco; las cuentas y las operaciones solo se
 // escriben con place_trade / join_market / reset_market, y el ranking, las posiciones y el coste medio los calculan
 // invest_leaderboard e invest_positions. Aquí solo se piden esos datos y se pintan; el navegador nunca envía un precio.
 import { state, ctx } from "../state.js";
 import { icon } from "../icons.js";
-import { esc, toast, ago } from "../util.js";
+import { esc, toast, ago, sleep } from "../util.js";
 import { getName } from "../store.js";
 import { hueOf } from "../ledger.js";
 
-export const meta = { id: "bolsa", title: "Bolsa de valores", emoji: "📈", blurb: "200.000 $ de mentira cada uno: compra, vende y mira qué hacen los demás." };
+export const meta = { id: "bolsa", title: "Bolsa de valores", emoji: "📈", blurb: "Acciones y criptomonedas con precios reales y 200.000 $ de mentira: compra, vende y mira qué hacen los demás." };
 
 const START_CASH = 200_000;
-const POLL_MS = 15_000; // refresco mientras el juego está abierto y la pestaña visible
-const SLOW_MS = 55_000; // los precios cambian cada minuto: mini gráficos y gráfico grande se piden como mucho una vez por minuto
+const POLL_MS = 20_000; // refresco mientras el juego está abierto y la pestaña visible (los precios llegan cada minuto)
+const SLOW_MS = 55_000; // mini gráficos y gráfico grande se piden como mucho una vez por minuto
 const FEED_STEP = 20;
 const RANGES = [[24, "24 h"], [48, "48 h"], [168, "7 días"]];
 const QUICK_BUY = [1000, 10_000, 50_000];
@@ -51,6 +53,8 @@ const delta = (n, text, d = 2) => {
 };
 const avatar = (name, size = "") => `<span class="person-dot ${size}" style="--h:${hueOf(name)}" aria-hidden="true">${esc(String(name).charAt(0).toUpperCase())}</span>`;
 const ordinal = (n) => `${n}.º`;
+const whenFmt = new Intl.DateTimeFormat("es", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+const hourFmt = new Intl.DateTimeFormat("es", { hour: "2-digit", minute: "2-digit" });
 
 // ---------- estado del módulo ----------
 
@@ -96,7 +100,15 @@ const S = {
   animateSheet: false, // la ficha solo se anima al abrirse, no en cada repintado
   reveal: false, // llevar el botón de confirmar a la vista tras elegir un importe
   refocus: "",
+  skew: 0, // hora del servidor − hora de este dispositivo (para «hace 40 s» sin depender del reloj del móvil)
+  status: null, // market_status() (solo administradores)
+  statusBusy: false,
+  statusErr: "",
+  statusTried: false,
+  refreshing: false, // «Actualizar ahora» en marcha
+  pendingRepaint: false,
 };
+let pressedAt = 0; // un dedo o un clic en curso: no se repinta la página justo debajo (el toque se perdería)
 
 const sb = () => ctx.store?.sb;
 const myId = () => ctx.store?.user?.id ?? null;
@@ -104,7 +116,35 @@ const me = () => S.board.find((b) => b.user_id === myId()) ?? null;
 const asset = (symbol) => S.assets.find((a) => a.symbol === symbol) ?? null;
 const holding = (uid, symbol) => S.positions.find((p) => p.user_id === uid && p.symbol === symbol) ?? null;
 const rerender = () => ctx.actions?.render?.();
-const repaint = () => S.active && rerender();
+const repaint = () => {
+  if (!S.active) return;
+  if (Date.now() - pressedAt < 1500) S.pendingRepaint = true;
+  else rerender();
+};
+const serverNow = () => Date.now() + S.skew;
+// «hace 40 s», «hace 3 min», «hace 2 h» a partir de una hora del servidor
+function ageText(iso) {
+  const s = Math.max(1, Math.round((serverNow() - Date.parse(iso)) / 1000));
+  if (s < 60) return `hace ${s} s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `hace ${m} min`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `hace ${h} h`;
+  const d = Math.floor(h / 24);
+  return `hace ${d} ${d === 1 ? "día" : "días"}`;
+}
+const when = (iso) => whenFmt.format(new Date(iso));
+// Cómo está el precio de un activo: live (en directo, operable), closed (mercado cerrado: vale el último cierre), stale (el
+// recolector no trae nada) o none (aún sin cotización). Lo decide la base de datos con las horas de la cotización.
+const stateOf = (a) => a?.state ?? "none";
+const stateLabel = (a) => ({ live: `En vivo · ${a.fetched_at ? ageText(a.fetched_at) : ""}`, closed: "Mercado cerrado · último cierre", stale: "Sin datos recientes", none: "Sin precio todavía" })[stateOf(a)];
+// No hay precios que valgan: ninguna cotización o todas viejas (pg_cron o pg_net sin activar, Yahoo sin responder…).
+const feedDown = () => S.assets.length > 0 && S.assets.every((a) => stateOf(a) === "none" || stateOf(a) === "stale");
+function reasonFor(a) {
+  if (a?.operable) return "";
+  if (stateOf(a) === "closed" && a.kind === "accion") return "Mercado cerrado: las acciones de EE. UU. se operan de lunes a viernes, de 9:30 a 16:00 (hora de Nueva York). Ahora ves el último cierre. Bitcoin y Ethereum no cierran: con ellas sí puedes operar.";
+  return "No hay precios en directo ahora mismo. Inténtalo en unos minutos.";
+}
 
 export const available = () => !S.missing;
 
@@ -160,7 +200,7 @@ async function loadHistory() {
   if (!S.sheet) return;
   const key = histKey();
   const { symbol, hours } = S.sheet;
-  const data = await rpc("market_history", { p_symbol: symbol, p_hours: hours, p_points: 96 });
+  const data = await rpc("market_series", { p_symbol: symbol, p_hours: hours, p_points: 96 });
   if (histKey() !== key) return; // se cambió de activo o de periodo mientras llegaba
   S.history = (data ?? []).map((p) => ({ t: p.t, price: Number(p.price) }));
   S.historyKey = key;
@@ -186,11 +226,14 @@ async function loadAll({ force = false } = {}) {
       rows(trades().order("id", { ascending: false }).limit(60)),
       uid ? rows(trades().eq("user_id", uid).order("id", { ascending: false }).limit(40)) : [],
       rpc("invest_best_worst"),
-      slow ? rpc("market_sparks", { p_hours: 24, p_points: 24 }) : null,
+      slow ? rpc("market_sparks", { p_hours: 120, p_points: 30 }) : null,
       pl ? rows(trades().eq("user_id", pl).order("id", { ascending: false }).limit(40)) : [],
     ]);
     if (S.sheet && (force || S.historyKey !== histKey() || Date.now() - S.historyAt > SLOW_MS)) await loadHistory().catch(() => {});
     Object.assign(S, { assets, board, positions, feed, mine, playerTrades, playerFor: pl });
+    if (assets[0]?.server_now) S.skew = Date.parse(assets[0].server_now) - Date.now();
+    // Si el activo de la ficha deja de ser operable (se cierra el mercado) se cierra el formulario de operar.
+    if (S.sheet?.side && !asset(S.sheet.symbol)?.operable) Object.assign(S.sheet, { side: null, choice: null, text: "" });
     S.best = (bw ?? []).find((r) => r.kind === "best") ?? null;
     S.worst = (bw ?? []).find((r) => r.kind === "worst") ?? null;
     if (sparks) {
@@ -212,6 +255,10 @@ async function loadAll({ force = false } = {}) {
   } finally {
     S.loading = false;
   }
+  if (feedDown() && state.isAdmin && !S.status && !S.statusBusy && !S.statusTried) {
+    S.statusTried = true;
+    loadStatus(); // el administrador ve enseguida por qué no llegan precios
+  }
   const sig = JSON.stringify([S.assets, S.board, S.positions, S.feed, S.mine, S.playerTrades, S.history.length && S.history[S.history.length - 1], S.sparksAt, S.error, S.stale, S.missing]);
   const changed = sig !== S.sig;
   S.sig = sig;
@@ -221,6 +268,21 @@ async function loadAll({ force = false } = {}) {
   if (S.again) {
     S.again = false;
     loadAll();
+  }
+}
+
+// Estado del recolector (solo administradores).
+async function loadStatus() {
+  S.statusBusy = true;
+  S.statusErr = "";
+  rerender();
+  try {
+    S.status = await rpc("market_status");
+  } catch (err) {
+    S.statusErr = friendly(err);
+  } finally {
+    S.statusBusy = false;
+    repaint();
   }
 }
 
@@ -251,6 +313,17 @@ const nudge = () => {
   S.nudgeTimer = setTimeout(tick, 500);
 };
 
+const onDown = () => {
+  pressedAt = Date.now();
+};
+const onUp = () => {
+  pressedAt = 0;
+  if (S.pendingRepaint) {
+    S.pendingRepaint = false;
+    repaint();
+  }
+};
+
 export function enter() {
   S.active = true;
   S.sheet = null;
@@ -262,6 +335,9 @@ export function enter() {
   S.timer = setInterval(tick, POLL_MS);
   document.addEventListener("visibilitychange", onVisible);
   document.addEventListener("keydown", onKey);
+  document.addEventListener("pointerdown", onDown, true);
+  document.addEventListener("pointerup", onUp, true);
+  document.addEventListener("pointercancel", onUp, true);
   if (!S.channel && sb()) {
     // Tiempo real opcional: las operaciones nuevas (y el reinicio) llegan al instante. Sin él, vale el refresco cada 15 s.
     try {
@@ -279,6 +355,10 @@ export function leave() {
   S.timer = null;
   document.removeEventListener("visibilitychange", onVisible);
   document.removeEventListener("keydown", onKey);
+  document.removeEventListener("pointerdown", onDown, true);
+  document.removeEventListener("pointerup", onUp, true);
+  document.removeEventListener("pointercancel", onUp, true);
+  pressedAt = 0;
   if (S.channel) {
     try {
       sb()?.removeChannel(S.channel);
@@ -339,7 +419,7 @@ function spark(points) {
 }
 
 function chart(points, hours, name) {
-  if (!points || points.length < 2) return `<div class="bolsa-chart is-empty" role="status">Cargando el gráfico…</div>`;
+  if (!points || points.length < 2) return `<div class="bolsa-chart is-empty" role="status">${points ? "Todavía no hay historial de este activo: se va llenando con el tiempo." : "Cargando el gráfico…"}</div>`;
   const W = 320;
   const H = 150;
   const v = points.map((p) => p.price);
@@ -354,6 +434,8 @@ function chart(points, hours, name) {
   const last = v[v.length - 1];
   const t = trend(last / first - 1);
   const label = hours === 168 ? "7 días" : `${hours} horas`;
+  const covered = (Date.parse(points[points.length - 1].t) - Date.parse(points[0].t)) / (hours * 3_600_000);
+  const note = covered < 0.6 ? `<p class="hint bolsa-chart-note">Todavía hay poco historial de este periodo: el gráfico se va llenando con el tiempo.</p>` : "";
   return `<div class="bolsa-chart ${t}" role="img" aria-label="Gráfico de ${esc(name)} en ${label}: empezó en ${money(first)}, ahora está en ${money(last)}; máximo ${money(hi)}, mínimo ${money(lo)}.">
       <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true">
         <line class="grid" x1="0" x2="${W}" y1="${H * 0.25}" y2="${H * 0.25}"/><line class="grid" x1="0" x2="${W}" y1="${H * 0.5}" y2="${H * 0.5}"/><line class="grid" x1="0" x2="${W}" y1="${H * 0.75}" y2="${H * 0.75}"/>
@@ -362,7 +444,7 @@ function chart(points, hours, name) {
       <span class="bolsa-chart-hi">${esc(money(hi))}</span><span class="bolsa-chart-lo">${esc(money(lo))}</span>
       <span class="bolsa-dot" style="top:${((y(last) / H) * 100).toFixed(1)}%"></span>
     </div>
-    <div class="bolsa-chart-axis" aria-hidden="true"><span>hace ${hours === 168 ? "7 días" : `${hours} h`}</span><span>ahora</span></div>`;
+    <div class="bolsa-chart-axis" aria-hidden="true"><span>hace ${hours === 168 ? "7 días" : `${hours} h`}</span><span>ahora</span></div>${note}`;
 }
 
 // ---------- operar: cálculo de la operación (la base de datos lo vuelve a comprobar todo) ----------
@@ -390,7 +472,7 @@ function planFor(priceOverride) {
   const sh = S.sheet;
   const a = sh && asset(sh.symbol);
   const mine = me();
-  if (!sh?.side || !a || !mine) return null;
+  if (!sh?.side || !a || !mine || (a.price == null && priceOverride == null)) return null;
   const price = priceOverride ?? Number(a.price);
   const priceC = Math.round(price * 100);
   const cash = Number(mine.cash);
@@ -458,12 +540,13 @@ async function placeTrade() {
   S.result = null;
   rerender();
   try {
-    // El precio lo pone el servidor al ejecutar; antes se pide el vigente para calcular la cantidad con él.
-    let current = Number(await rpc("market_price", { p_symbol: sh.symbol }));
+    // El precio lo pone el servidor al ejecutar (la última cotización de Yahoo); antes se pide el vigente para calcular la cantidad con él.
+    const latest = async () => Number((await rpc("market_prices")).find((r) => r.symbol === sh.symbol)?.price);
+    let current = await latest();
     let attempt = 0;
     for (;;) {
       attempt++;
-      const p = planFor(current) ?? plan;
+      const p = (Number.isFinite(current) && planFor(current)) || plan;
       try {
         const data = await rpc("place_trade", { p_symbol: sh.symbol, p_side: sh.side, p_qty: Number(p.qty.toFixed(6)) });
         S.result = Array.isArray(data) ? data[0] : data;
@@ -471,7 +554,7 @@ async function placeTrade() {
       } catch (err) {
         // «Todo mi efectivo» justo al cambiar de minuto: el precio subió unos céntimos y ya no alcanza. Se repite una vez.
         if (attempt < 2 && sh.choice?.kind === "cash" && /No tienes suficiente dinero/.test(err?.message || "")) {
-          current = Number(await rpc("market_price", { p_symbol: sh.symbol }));
+          current = await latest();
           continue;
         }
         throw err;
@@ -496,14 +579,17 @@ const tile = (emoji) => `<span class="bolsa-tile" aria-hidden="true">${esc(emoji
 
 function assetRow(a) {
   const pos = holding(myId(), a.symbol);
-  const ch = Number(a.change_24h_pct);
-  const t = trend(ch);
-  return `<button type="button" class="bolsa-asset" data-action="bolsa-open" data-symbol="${esc(a.symbol)}" aria-label="${esc(a.name)}: ${esc(money(a.price))}, ${esc(sPct(ch))} en 24 horas. Abrir la ficha">
+  const st = stateOf(a);
+  const has = a.price != null;
+  const ch = a.change_day_pct == null ? null : Number(a.change_day_pct);
+  const t = ch == null ? "flat" : trend(ch);
+  const label = stateLabel(a);
+  return `<button type="button" class="bolsa-asset is-${st}" data-action="bolsa-open" data-symbol="${esc(a.symbol)}" aria-label="${esc(a.name)}: ${has ? esc(money(a.price)) : "sin precio"}${ch == null ? "" : `, ${esc(sPct(ch))} hoy`}. ${esc(label)}. Abrir la ficha">
     ${tile(a.emoji)}
-    <span class="bolsa-name"><strong>${esc(a.name)}</strong><small>${esc(a.symbol)}${pos ? ` · Tienes ${esc(fmtQty(pos.qty))}` : ""}</small></span>
+    <span class="bolsa-name"><strong>${esc(a.name)}</strong><small><span class="bolsa-st is-${st}" aria-hidden="true"></span>${esc(a.symbol)} · ${esc(label)}${pos ? ` · Tienes ${esc(fmtQty(pos.qty))}` : ""}</small></span>
     <span class="bolsa-spark ${t}">${spark(S.sparks[a.symbol])}</span>
-    <span class="bolsa-px">${esc(money(a.price))}</span>
-    <span class="bolsa-chg">${delta(ch, sPct(ch))}</span>
+    <span class="bolsa-px">${has ? esc(money(a.price)) : "—"}</span>
+    <span class="bolsa-chg">${ch == null ? `<span class="bolsa-delta flat">–</span>` : delta(ch, sPct(ch))}</span>
   </button>`;
 }
 
@@ -556,7 +642,7 @@ function hero(mine) {
 const joinCard = () => `<section class="bolsa-join" aria-label="Entrar a la bolsa">
     <span class="bolsa-join-art" aria-hidden="true">📈</span>
     <h2>Entra a la bolsa</h2>
-    <p>Recibes <strong>200.000 $</strong> de mentira para comprar y vender. Todos ven lo que hacen los demás: ¡gana quien tenga más al final!</p>
+    <p>Recibes <strong>200.000 $</strong> de dinero ficticio para comprar y vender acciones y criptomonedas con <strong>precios reales</strong> y en directo. Todos ven lo que hacen los demás: ¡gana quien tenga más al final!</p>
     <button type="button" class="btn primary bolsa-big" data-action="bolsa-join" ${S.joining ? "disabled" : ""}>${S.joining ? "Entrando…" : "Entrar"}</button>
   </section>`;
 
@@ -568,8 +654,55 @@ function tabs() {
 }
 
 function marketTab() {
-  return `<p class="hint bolsa-note">Los precios se mueven cada minuto y son iguales para todos. Toca un activo para ver su gráfico y operar.</p>
+  if (feedDown()) return noPrices();
+  const newest = Math.max(...S.assets.filter((a) => a.fetched_at).map((a) => Date.parse(a.fetched_at)));
+  const anyLive = S.assets.some((a) => stateOf(a) === "live");
+  const closedStocks = S.assets.some((a) => a.kind === "accion" && stateOf(a) === "closed");
+  return `<p class="bolsa-feedbar"><span class="bolsa-st is-${anyLive ? "live" : "closed"}" aria-hidden="true"></span><span><strong>Precios reales de Yahoo Finance</strong> · actualizados ${esc(ageText(new Date(newest).toISOString()))}</span></p>
+    ${closedStocks ? `<p class="hint bolsa-note">Las acciones de EE. UU. se operan de lunes a viernes, de 9:30 a 16:00 (hora de Nueva York). Ahora ves su último cierre. Bitcoin y Ethereum no cierran.</p>` : ""}
+    <p class="hint bolsa-note">Los precios son reales; el dinero es ficticio. Toca un activo para ver su gráfico y operar.</p>
     <div class="bolsa-assets">${S.assets.map(assetRow).join("")}</div>`;
+}
+
+// «Sin precios en directo todavía»: ninguna cotización o todas viejas. Los administradores ven aquí por qué y pueden forzar una ronda.
+function noPrices() {
+  const never = S.assets.every((a) => stateOf(a) === "none");
+  return `<section class="bolsa-nofeed" aria-label="Sin precios en directo">
+    <span class="bolsa-nofeed-art" aria-hidden="true">📡</span>
+    <h2>Sin precios en directo todavía</h2>
+    <p>${never ? "Todavía no ha llegado ningún precio real." : "Hace un rato que no llegan precios nuevos."} Los precios salen de Yahoo Finance y se piden cada minuto. Si la bolsa se acaba de instalar, espera un minuto y vuelve a mirar.</p>
+    ${state.isAdmin ? priceAdmin() : `<p class="hint">Si sigue igual, avisa a quien administra el viaje.</p>`}
+  </section>`;
+}
+
+// Panel del administrador: estado del recolector de precios y «Actualizar ahora».
+function priceAdmin() {
+  if (!state.isAdmin) return "";
+  const body = S.statusBusy ? `<p class="hint" role="status">Consultando el estado…</p>` : S.statusErr ? `<p class="bolsa-error" role="alert">${esc(S.statusErr)}</p>` : S.status ? statusHtml(S.status) : "";
+  return `<div class="bolsa-admin bolsa-feedadmin">
+    <p class="hint"><strong>Para quien administra:</strong> los precios los pide la base de datos a Yahoo Finance cada minuto (extensiones pg_cron y pg_net de Supabase).</p>
+    <div class="bolsa-admin-actions">
+      <button type="button" class="btn primary" data-action="bolsa-refresh" ${S.refreshing ? "disabled" : ""}>${S.refreshing ? "Actualizando…" : "Actualizar ahora"}</button>
+      <button type="button" class="btn" data-action="bolsa-status" ${S.statusBusy ? "disabled" : ""}>Ver estado</button>
+    </div>${body}</div>`;
+}
+
+function statusHtml(st) {
+  const hint =
+    !st.pg_net || !st.pg_cron
+      ? `Faltan extensiones (${[!st.pg_net && "pg_net", !st.pg_cron && "pg_cron"].filter(Boolean).join(" y ")}). Actívalas en Supabase: Dashboard → Database → Extensions, y pulsa «Actualizar ahora».`
+      : !st.job
+        ? "El trabajo de pg_cron no está programado. Pulsa «Actualizar ahora» para programarlo."
+        : "";
+  const err = (a) => (a.last_error && (!a.last_ok_at || Date.parse(a.last_error_at) > Date.parse(a.last_ok_at)) ? a.last_error : "");
+  const bad = (st.recent_responses ?? []).filter((r) => r.status !== 200).slice(0, 2);
+  return `<div class="bolsa-status" role="status">
+    ${hint ? `<p class="bolsa-error">${esc(hint)}</p>` : ""}
+    <p class="hint">pg_net: <b>${st.pg_net ? "activa" : "NO"}</b> · pg_cron: <b>${st.pg_cron ? "activa" : "NO"}</b> · trabajo: <b>${st.job ? `cada minuto${st.job.active === false ? " (parado)" : ""}` : "sin programar"}</b> · última ronda: <b>${st.last_tick_at ? esc(ageText(st.last_tick_at)) : "nunca"}</b>${st.pending_requests ? ` · ${esc(String(st.pending_requests))} peticiones esperando` : ""}</p>
+    ${st.last_tick_note ? `<p class="hint">${esc(st.last_tick_note)}</p>` : ""}
+    ${bad.length ? `<p class="hint">Últimas respuestas raras de Yahoo: ${bad.map((r) => esc(`${r.status ?? "sin código"}${r.error ? ` (${r.error})` : r.body ? ` «${String(r.body).slice(0, 40)}»` : ""}`)).join(" · ")}</p>` : ""}
+    <ul class="bolsa-feedlist">${(st.assets ?? []).map((a) => `<li><b>${esc(a.symbol)}</b> <span class="bolsa-st is-${esc(a.state)}" aria-hidden="true"></span>${esc({ live: "en vivo", closed: "cerrado", stale: "sin datos recientes", none: "sin precio" }[a.state] ?? a.state)}${a.price != null ? ` · ${esc(money(a.price))}` : ""}${err(a) ? ` · <i>${esc(err(a))}</i>` : ""}</li>`).join("")}</ul>
+  </div>`;
 }
 
 function portfolioTab(mine) {
@@ -599,7 +732,7 @@ function playersTab() {
   if (S.player) return playerDetail();
   const feed = S.feed.slice(0, S.feedShown);
   const admin = state.isAdmin
-    ? `<h3 class="sec-title">Administración</h3><div class="bolsa-admin"><p class="hint">Borra todas las operaciones y devuelve 200.000 $ a cada jugador. No se puede deshacer.</p>
+    ? `<h3 class="sec-title">Administración</h3>${priceAdmin()}<div class="bolsa-admin"><p class="hint">Borra todas las operaciones y devuelve 200.000 $ a cada jugador. No se puede deshacer.</p>
         <button type="button" class="btn danger" data-action="bolsa-reset" ${S.busy ? "disabled" : ""}>${icon("trash", 16)} Reiniciar la bolsa</button></div>`
     : "";
   return `<h3 class="sec-title">Clasificación</h3>
@@ -639,24 +772,26 @@ function sheetHtml() {
   if (!a) return "";
   const mine = me();
   const pos = holding(myId(), sh.symbol);
-  const ch = Number(a.change_24h_pct);
-  const t = trend(ch);
+  const ch = a.change_day_pct == null ? null : Number(a.change_day_pct);
+  const st = stateOf(a);
   const pct = pos && Number(pos.value) - Number(pos.pnl) > 0 ? (Number(pos.pnl) / (Number(pos.value) - Number(pos.pnl))) * 100 : 0;
   const position = pos
     ? `<p class="bolsa-position"><strong>Tu posición:</strong> ${esc(units(pos.qty))} · valen ${esc(money(pos.value))} ${delta(Number(pos.pnl), `${sMoney(Number(pos.pnl))} (${sPct(pct)})`)}</p>`
     : `<p class="bolsa-position">${mine ? "Todavía no tienes de este activo." : ""}</p>`;
+  const reason = reasonFor(a);
+  const reasonBox = reason ? `<p class="bolsa-reason" role="status"><span aria-hidden="true">⏸️</span> ${esc(reason)}</p>` : "";
   let action;
   if (!mine) {
-    action = `<div class="notice bolsa-joinnote"><p><strong>Para operar, primero entra a la bolsa</strong> y recibe 200.000 $.</p></div>
+    action = `${reasonBox}<div class="notice bolsa-joinnote"><p><strong>Para operar, primero entra a la bolsa</strong> y recibe 200.000 $.</p></div>
       <button type="button" class="btn primary bolsa-big" data-action="bolsa-join" ${S.joining ? "disabled" : ""}>${S.joining ? "Entrando…" : "Entrar"}</button>`;
   } else {
-    action = `<div class="bolsa-sides">
-        <button type="button" class="btn bolsa-big bolsa-buy" data-action="bolsa-side" data-side="buy" aria-pressed="${sh.side === "buy"}" ${S.busy ? "disabled" : ""}>Comprar</button>
-        <button type="button" class="btn bolsa-big bolsa-sell" data-action="bolsa-side" data-side="sell" aria-pressed="${sh.side === "sell"}" ${S.busy || !pos ? "disabled" : ""}>Vender</button>
-      </div>${pos ? "" : `<p class="hint bolsa-hint-sell">Para vender primero tienes que comprar.</p>`}`;
+    action = `${reasonBox}<div class="bolsa-sides">
+        <button type="button" class="btn bolsa-big bolsa-buy" data-action="bolsa-side" data-side="buy" aria-pressed="${sh.side === "buy"}" ${S.busy || !a.operable ? "disabled" : ""}>Comprar</button>
+        <button type="button" class="btn bolsa-big bolsa-sell" data-action="bolsa-side" data-side="sell" aria-pressed="${sh.side === "sell"}" ${S.busy || !pos || !a.operable ? "disabled" : ""}>Vender</button>
+      </div>${pos || !a.operable ? "" : `<p class="hint bolsa-hint-sell">Para vender primero tienes que comprar.</p>`}`;
   }
   const result = S.result ? resultHtml(S.result) : "";
-  const trade = mine && sh.side ? tradeForm(sh, mine, pos) : "";
+  const trade = mine && sh.side && a.operable ? tradeForm(sh, mine, pos) : "";
   const enter = S.animateSheet ? " is-entering" : "";
   S.animateSheet = false;
   return `<div class="bolsa-overlay${enter}">
@@ -668,8 +803,9 @@ function sheetHtml() {
           <div class="bolsa-name"><h3 id="bolsa-sheet-title">${esc(a.name)}</h3><small>${esc(a.symbol)}</small></div>
           <button type="button" class="icon-btn" id="bolsa-close" data-action="bolsa-close" aria-label="Cerrar la ficha">${icon("x", 20)}</button>
         </header>
-        <div class="bolsa-sheet-price"><strong>${esc(money(a.price))}</strong>${delta(ch, `${sPct(ch)} en 24 h`)}</div>
-        ${chart(S.historyKey === histKey() ? S.history : [], sh.hours, a.name)}
+        <div class="bolsa-sheet-price"><strong>${a.price != null ? esc(money(a.price)) : "—"}</strong>${ch == null ? "" : delta(ch, `${sPct(ch)} hoy`)}</div>
+        <p class="bolsa-livebar"><span class="bolsa-st is-${st}" aria-hidden="true"></span><span>${esc(stateLabel(a))}${st !== "live" && a.quoted_at ? ` (${esc(when(a.quoted_at))}, tu hora)` : ""}${a.prev_close != null ? ` · Cierre anterior: ${esc(money(a.prev_close))}` : ""}</span></p>
+        ${chart(S.historyKey === histKey() ? S.history : null, sh.hours, a.name)}
         <div class="segmented bolsa-ranges" role="group" aria-label="Periodo del gráfico">${RANGES.map(([h, label]) => `<button type="button" data-action="bolsa-range" data-hours="${h}" aria-pressed="${sh.hours === h}">${label}</button>`).join("")}</div>
         ${position}
         ${action}
@@ -706,10 +842,10 @@ function tradeForm(sh, mine, pos) {
 function resultHtml(r) {
   const a = asset(r.symbol);
   const buy = r.side === "buy";
-  const hora = new Date(r.created_at).toLocaleTimeString("es", { hour: "2-digit", minute: "2-digit" });
+  const hora = hourFmt.format(new Date(r.quoted_at ?? r.created_at));
   const cash = me()?.cash;
   return `<div class="bolsa-result"><strong><span aria-hidden="true">✅</span> ${buy ? "Compra hecha" : "Venta hecha"}</strong>
-    <p>${buy ? "Compraste" : "Vendiste"} <b>${esc(units(r.qty))}</b> de ${esc(a?.name ?? r.symbol)} a <b>${esc(money(r.price))}</b> cada una (precio oficial de las ${esc(hora)}).</p>
+    <p>${buy ? "Compraste" : "Vendiste"} <b>${esc(units(r.qty))}</b> de ${esc(a?.name ?? r.symbol)} a <b>${esc(money(r.price))}</b> cada una (precio real de Yahoo: último trade a las ${esc(hora)}).</p>
     <p>${buy ? "Has pagado" : "Has cobrado"} <b>${esc(money(r.total))}</b>.${cash != null ? ` Ahora tienes ${esc(money(cash))} en efectivo.` : ""}</p></div>`;
 }
 
@@ -741,6 +877,7 @@ export function render() {
     ${S.stale ? `<p class="hint bolsa-stale">Sin conexión con el servidor: se ven los últimos datos.</p>` : ""}
     ${mine ? hero(mine) : joinCard()}
     ${tabs()}
+    ${feedDown() && S.tab !== "market" ? `<p class="hint bolsa-stale">Sin precios en directo: se valora con el último precio conocido.</p>` : ""}
     <div class="bolsa-body">${body}</div>
     ${S.sheet ? sheetHtml() : ""}
   </div>`;
@@ -878,6 +1015,27 @@ export const actions = {
   "bolsa-more": () => {
     S.feedShown = Math.min(S.feedShown + FEED_STEP, 60);
     rerender();
+  },
+  "bolsa-status": () => loadStatus(),
+  "bolsa-refresh": async () => {
+    if (S.refreshing) return;
+    S.refreshing = true;
+    S.statusErr = "";
+    rerender();
+    try {
+      await rpc("market_refresh");
+      toast("Pidiendo los precios a Yahoo… tardan unos segundos.", 4000);
+      await sleep(5000);
+      await rpc("market_refresh"); // recoge lo que ha contestado Yahoo
+      await loadAll({ force: true });
+      S.status = await rpc("market_status");
+    } catch (err) {
+      S.statusErr = friendly(err);
+      toast(S.statusErr);
+    } finally {
+      S.refreshing = false;
+      repaint();
+    }
   },
   "bolsa-reset": async () => {
     if (S.busy || !confirm("¿Reiniciar la bolsa? Se borrarán todas las operaciones y todos los jugadores volverán a tener 200.000 $. No se puede deshacer.")) return;

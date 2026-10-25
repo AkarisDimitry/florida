@@ -2,6 +2,8 @@ import { state, ctx, VIEWS, hashOf, viewOfHash, planTabOfHash, persist } from ".
 import { createStore, getName, setName } from "./store.js";
 import { createMap } from "./map.js";
 import { prepareImage } from "./images.js";
+import { batchLocator, photoLocationEnabled } from "./fotoloc.js";
+import { PHOTO_ACCEPT } from "./formatos.js";
 import { icon } from "./icons.js";
 import { $, $$, esc, guarded, toast, hasCoords, reducedMotion, schemaHint, authHint, utc, capitalize, fmtDayShort, todayIso } from "./util.js";
 import { allDays, locatedStops, stopsOfDay, currentRoutes, onRoutesChange, photosNewestFirst, dayTargets, friendsNow } from "./trip.js";
@@ -20,14 +22,24 @@ import { initDiscover, openDiscover } from "./discover.js";
 import { initAccess, openAccess, refreshAccess } from "./accessdialog.js";
 import { startPresence, stopPresence, refreshPeople } from "./presence.js";
 import { initPeople, refreshPeopleDialog } from "./people.js";
+import { initAvisos, syncAvisos, showAlert } from "./avisos.js";
+import { initEncuentro, syncEncuentro, encuentroActions } from "./encuentro.js";
 import { renderJuegos, gameActions, syncGames, gameEvent } from "./juegos/index.js";
 import { commentActions, submitComment, deleteComment, cancelRecordings, commentsOf, withReplies, attachmentsOf, removeAttachments } from "./comments.js";
 import { pickFiles } from "./media.js";
 import { ideasActions } from "./ideas.js";
+import { categoryActions } from "./categorias.js";
+import { mapExpenses } from "./mapgastos.js";
+import { currentTracks } from "./maprecorrido.js";
+import { ubicarActions } from "./ubicar.js";
+import { initChat, syncChat, enterChat, leaveChat } from "./chat.js";
+import { initUpdates } from "./actualizar.js";
 import { renderAlbum, hydrateAlbum, stopHydrating } from "./albumview.js";
+import { initCola, colaStart, colaSynced, colaActions, colaLoginNote, usable as colaUsable, enqueue as colaEnqueue, kick as colaKick, settle as colaSettle, beginBatch as colaBeginBatch, blockedReason as colaBlocked, ColaError } from "./cola.js";
 
 const main = $("#main");
 const mapView = $("#map-view");
+const chatView = $("#chat-view");
 const SNAPSHOT_KEY = "viaje.copia";
 
 const darkQuery = matchMedia("(prefers-color-scheme: dark)");
@@ -71,9 +83,11 @@ async function refresh() {
       toast(err.message || "No se pudieron cargar los datos");
     }
   }
+  colaSynced(); // fotos en cola: cambia los mosaicos locales por los reales y reanuda la subida
   render();
   refreshEnvironment();
   syncPresence();
+  syncAvisos();
 }
 
 // Solo cambió quién está en línea o dónde está: recarga ligera (no vuelve a pedir actividades, fotos, etc.).
@@ -132,7 +146,7 @@ function loginGate() {
   }
   return `<div class="gate login"><div class="gate-art">${icon("map", 34)}</div>
     <h2>Entra al viaje</h2>
-    <p>Escribe tu nombre y tu correo y te enviamos un enlace. <strong>Solo hace falta una vez:</strong> la sesión se queda guardada en este dispositivo.</p>
+    <p>Escribe tu nombre y tu correo y te enviamos un enlace. <strong>Solo hace falta una vez:</strong> la sesión se queda guardada en este dispositivo.</p>${colaLoginNote()}
     <form class="login-form" data-form="login">
       <input name="name" maxlength="40" autocomplete="given-name" placeholder="Tu nombre" aria-label="Tu nombre" required value="${esc(d.login_name ?? getName())}">
       <input name="email" type="email" inputmode="email" autocomplete="email" autocapitalize="off" spellcheck="false" enterkeyhint="send" placeholder="Tu correo" aria-label="Tu correo" required value="${esc(email)}">
@@ -195,8 +209,12 @@ function render({ user = false } = {}) {
     }
     return;
   }
+  const showChat = view === "chat";
   mapView.hidden = !showMap;
-  main.hidden = showMap;
+  chatView.hidden = !showChat;
+  main.hidden = showMap || showChat;
+  if (showChat) enterChat();
+  else leaveChat();
   if (!showMap && mapWasVisible) {
     ctx.map.stopPlayback();
     ctx.map.cancelPick();
@@ -204,6 +222,8 @@ function render({ user = false } = {}) {
 
   if (showMap) {
     renderMapView(!mapWasVisible);
+  } else if (showChat) {
+    /* el chat dibuja su propio contenedor (js/chat.js) */
   } else {
     // Un refresco remoto no debe quitarle el foco a quien está escribiendo un comentario.
     const typingId = document.activeElement?.closest?.(".comment-form")?.dataset.key;
@@ -256,6 +276,8 @@ function render({ user = false } = {}) {
   refreshLightbox();
   refreshAccess();
   syncGames();
+  syncChat(); // chat: carga y tiempo real cuando hay sesión de viajero
+  syncEncuentro(); // punto de encuentro: banner de arriba, pin del mapa y carga de datos
 }
 
 // ---------- datos automáticos: tiempo y ciudad de cada día ----------
@@ -336,6 +358,7 @@ function pushMapData() {
     photos: mapPhotos(),
     routes: currentRoutes(),
     friends: friendsNow(),
+    tracks: currentTracks(),
     layers: state.layers,
     activeDay: state.day,
     selected: state.selectedStop,
@@ -344,7 +367,7 @@ function pushMapData() {
 }
 
 function allCoords() {
-  return [...currentRoutes().flatMap((r) => r.coords), ...locatedStops().map((s) => [s.lng, s.lat]), ...(state.layers.photos ? mapPhotos().map((p) => [p.lng, p.lat]) : [])];
+  return [...currentRoutes().flatMap((r) => r.coords), ...locatedStops().map((s) => [s.lng, s.lat]), ...(state.layers.photos ? mapPhotos().map((p) => [p.lng, p.lat]) : []), ...(state.layers.expenses !== false ? mapExpenses().map((e) => [e.lng, e.lat]) : []), ...(state.layers.tracks !== false ? currentTracks().flatMap((t) => t.coords) : [])];
 }
 
 function renderMapView(becameVisible) {
@@ -454,16 +477,17 @@ function setView(view, planTab = "days") {
 // Lleva a la persona al mapa para que toque un punto; vuelve a la vista de origen al terminar.
 async function pickOnMap(text) {
   const previous = state.view;
+  const previousTab = state.planTab; // al volver, la misma sección del Itinerario (p. ej. Cuentas, si se elige el sitio de un gasto)
   setView("map");
   if (!ctx.map.ready()) {
     toast("El mapa no está disponible.");
-    setView(previous);
+    setView(previous, previousTab);
     return null;
   }
   showMapBanner(`${icon("pin", 16)} ${esc(text)}`, { cancellable: true });
   const spot = await ctx.map.pick();
   hideMapBanner();
-  setView(previous);
+  setView(previous, previousTab);
   return spot;
 }
 
@@ -528,7 +552,7 @@ const actions = {
   camera: async () => {
     if (!requireName()) return;
     const files = await pickFiles({ camera: true });
-    if (files.length) await uploadFiles(files, { locate: true });
+    if (files.length) await uploadFiles(files);
   },
   "show-on-map": ({ id }) => focusStopOnMap(id),
   "day-on-map": ({ day }) => {
@@ -615,7 +639,8 @@ const actions = {
 };
 
 let packBusy = false; // un segundo toque mientras se guarda no debe repetir los elementos
-Object.assign(actions, gameActions, commentActions, ideasActions);
+Object.assign(actions, gameActions, commentActions, ideasActions, colaActions);
+Object.assign(actions, encuentroActions, categoryActions, ubicarActions);
 
 async function addPackItems(texts, assigned_to = null) {
   if (packBusy) return 0;
@@ -766,12 +791,15 @@ main.addEventListener(
 );
 
 // pestañas
-const TABS = { map: ["map", "Mapa"], plan: ["calendar", "Itinerario"], photos: ["camera", "Fotos"], games: ["gamepad", "Juegos"], album: ["book", "Álbum"] };
+const TABS = { map: ["map", "Mapa"], plan: ["calendar", "Itinerario", "Plan"], photos: ["camera", "Fotos"], chat: ["chat", "Chat"], games: ["gamepad", "Juegos"], album: ["book", "Álbum"] };
 for (const tab of $$(".tab")) {
-  const [ico, label] = TABS[tab.dataset.view];
-  tab.innerHTML = `${icon(ico, 22)}<span>${label}</span>`;
+  const [ico, label, short] = TABS[tab.dataset.view];
+  // En pantallas estrechas (con seis pestañas) se usa el nombre corto: «Plan» en vez de «Itinerario».
+  tab.innerHTML = `${icon(ico, 22)}<span class="tab-label"><span class="full">${label}</span>${short ? `<span class="short">${short}</span>` : ""}</span>`;
   tab.addEventListener("click", () => setView(tab.dataset.view));
 }
+initChat();
+initUpdates(); // aviso de «versión nueva» (compara version.json)
 $("#data-btn").innerHTML = icon("more", 22);
 $(".people-ico").innerHTML = icon("users", 17);
 $("#fab-fit").innerHTML = icon("fit", 22);
@@ -846,22 +874,90 @@ document.addEventListener("keydown", (event) => {
 async function cameraChallenge(text) {
   if (!requireName()) return;
   const files = await pickFiles({ camera: true });
-  if (files.length) await uploadFiles(files, { locate: true, caption: `Reto: ${text}` });
+  if (files.length) await uploadFiles(files, { caption: `Reto: ${text}` });
 }
 
-async function uploadFiles(files, { locate = false, caption = null } = {}) {
+// Ubicación de las fotos (fotoloc.js): la del GPS de la propia foto si la trae y, si no, la del dispositivo al elegirla o hacerla
+// (si la persona no lo apagó en Ajustes). Un aviso más claro cuando ninguna ha quedado situada.
+const prepareOptions = () => ({ onConvert: () => toast("Convirtiendo la foto a JPEG…", 60000) });
+
+function noLocationToast() {
+  toast(
+    photoLocationEnabled()
+      ? "Subidas, pero sin ubicación: no se pudo saber dónde estás (revisa el permiso de ubicación del navegador). Puedes colocarlas a mano: abre la foto y elige el punto en el mapa."
+      : "Subidas, pero ninguna trae ubicación. Puedes colocarlas a mano (abre la foto y elige el punto en el mapa) o activar «Poner mi ubicación a las fotos» en Ajustes.",
+    11000,
+  );
+}
+
+// Con Supabase, cada foto se prepara, se guarda PRIMERO en el móvil (cola.js: se ve ya en la galería como «En cola») y se sube desde
+// ahí: sin señal se queda guardada y sube sola al volver la red, sin duplicados. `afterSaved` se llama cuando todo está a salvo.
+async function uploadFiles(files, { caption = null, afterSaved = null } = {}) {
+  if (!colaUsable()) {
+    await uploadFilesDirect(files, { caption }); // modo demo o navegador sin IndexedDB: subida directa, como siempre
+    afterSaved?.();
+    return;
+  }
+  const endBatch = colaBeginBatch();
+  try {
+    const saved = [];
+    const failed = [];
+    let full = null;
+    const locator = batchLocator();
+    for (const [i, file] of files.entries()) {
+      toast(navigator.onLine === false ? `Guardando foto ${i + 1} de ${files.length}…` : `Subiendo foto ${i + 1} de ${files.length}…`, 60000);
+      try {
+        const prepared = await prepareImage(file, prepareOptions());
+        prepared.locSource = await locator.fill(prepared); // GPS de la foto, o dónde estás ahora (capturado ya, no al subir)
+        saved.push((await colaEnqueue(prepared, { caption })).id);
+        colaKick(); // sube mientras se prepara la siguiente
+      } catch (err) {
+        if (err instanceof ColaError) {
+          full = err;
+          break;
+        }
+        console.error(err);
+        failed.push(err.message || file.name);
+      }
+    }
+    if (!full) afterSaved?.();
+    const result = await colaSettle(saved);
+    const problems = [...failed, ...result.failed];
+    const blocked = colaBlocked();
+    const one = result.queued === 1;
+    const queuedHere = one ? "La foto está guardada" : `Las ${result.queued} fotos están guardadas`;
+    const uploadedHere = result.uploaded ? `${result.uploaded === 1 ? "1 ya subida" : `${result.uploaded} ya subidas`}. ` : "";
+    if (full) toast(`${full.message}${saved.length ? ` Se guardaron ${saved.length} de ${files.length}.` : ""}`, 10000);
+    else if (problems.length) {
+      toast(`${problems.length} de ${files.length} sin subir: ${problems[0]}${result.uploaded ? ` Se subieron ${result.uploaded}.` : ""}${result.queued ? ` ${result.queued} siguen en cola.` : ""}`, 9000);
+    } else if (result.queued) {
+      if (blocked === "auth") toast(`${uploadedHere}${queuedHere} en el móvil y ${one ? "se subirá" : "se subirán"} cuando vuelvas a entrar.`, 9000);
+      else if (blocked === "name") toast(`${uploadedHere}${queuedHere} en el móvil. Pon tu nombre en el perfil y ${one ? "se subirá" : "se subirán"}.`, 9000);
+      else if (navigator.onLine === false) toast(`${uploadedHere}📥 Sin conexión: ${queuedHere.toLowerCase()} en el móvil y ${one ? "se subirá sola" : "se subirán solas"} cuando vuelva la señal.`, 9000);
+      else toast(`${uploadedHere}${queuedHere} en el móvil: no se pudo subir ahora${result.reason ? ` (${result.reason.toLowerCase()})` : ""} y ${one ? "se reintentará sola" : "se reintentarán solas"}.`, 9000);
+    } else uploadedToast(result.uploaded, result.located);
+  } finally {
+    endBatch();
+  }
+}
+
+function uploadedToast(uploaded, located) {
+  if (located === uploaded) toast(uploaded === 1 ? "Foto subida, con su ubicación" : `${uploaded} fotos subidas, todas con ubicación`);
+  else if (located === 0) noLocationToast();
+  else toast(`${uploaded} fotos subidas, ${located} con ubicación. Las demás se pueden colocar a mano desde el visor.`, 8000);
+}
+
+// Subida directa (sin cola), para el modo demo y los navegadores sin IndexedDB.
+async function uploadFilesDirect(files, { caption = null } = {}) {
   const failed = [];
   let uploaded = 0;
   let located = 0;
+  const locator = batchLocator();
   for (const [i, file] of files.entries()) {
     toast(`Subiendo foto ${i + 1} de ${files.length}…`, 60000);
     try {
-      const prepared = await prepareImage(file);
-      // Una foto hecha con la cámara no siempre trae ubicación: se usa la del móvil en ese momento (si hay permiso).
-      if (locate && !hasCoords(prepared)) {
-        const here = await Promise.race([currentPosition().catch(() => null), new Promise((r) => setTimeout(r, 4000))]);
-        if (here) Object.assign(prepared, { lat: here.lat, lng: here.lng });
-      }
+      const prepared = await prepareImage(file, prepareOptions());
+      await locator.fill(prepared);
       try {
         const id = await ctx.store.addPhoto(prepared);
         if (caption) await ctx.store.updatePhoto(id, { caption }).catch(() => {}); // el pie de foto es un extra: si falla, la foto queda igual
@@ -878,11 +974,11 @@ async function uploadFiles(files, { locate = false, caption = null } = {}) {
   }
   if (failed.length) toast(`${failed.length} de ${files.length} sin subir: ${failed[0]}`, 8000);
   else if (located === uploaded) toast(uploaded === 1 ? "Foto subida, con su ubicación" : `${uploaded} fotos subidas, todas con ubicación`);
-  else if (located === 0)
-    toast("Subidas, pero ninguna trae ubicación. En iPhone, al elegirlas toca «Opciones» y activa «Ubicación». También puedes colocarlas a mano: abre la foto y elige el punto en el mapa.", 11000);
+  else if (located === 0) noLocationToast();
   else toast(`${uploaded} fotos subidas, ${located} con ubicación. Las demás se pueden colocar a mano desde el visor.`, 8000);
 }
 
+$("#photo-input").accept = PHOTO_ACCEPT; // en iPhone solo image/*: iOS convierte él mismo las HEIC a JPEG
 $("#photo-input").addEventListener(
   "change",
   guarded(async (event) => {
@@ -893,7 +989,9 @@ $("#photo-input").addEventListener(
   }),
 );
 
-// Fotos recibidas con "Compartir" desde la galería (Android, app instalada): las guardó el service worker.
+// Fotos recibidas con "Compartir" desde la galería (Android, app instalada): las guardó el service worker en la caché
+// `viaje-compartido`. Con la cola, la caché solo se vacía cuando las fotos ya están a salvo en la cola del móvil (si la app se
+// cerrara a medias, se leerían de nuevo en vez de perderse).
 async function receiveSharedPhotos() {
   if (!new URLSearchParams(location.search).has("compartido")) return;
   history.replaceState(null, "", `${location.pathname}#fotos`);
@@ -906,9 +1004,18 @@ async function receiveSharedPhotos() {
       return new File([blob], decodeURIComponent(response.headers.get("X-Nombre") || "foto.jpg"), { type: blob.type });
     }),
   );
-  for (const request of requests) await cache.delete(request);
+  const clear = async () => {
+    for (const request of requests) await cache.delete(request);
+  };
   if (!files.length) return;
   setView("photos");
+  if (colaUsable()) {
+    // Sin sesión o sin nombre también se guardan: se suben solas cuando la persona entre (la cola las conserva).
+    toast(`Recibidas ${files.length} ${files.length === 1 ? "foto" : "fotos"} desde la galería`, 2500);
+    await uploadFiles(files, { afterSaved: clear });
+    return;
+  }
+  await clear();
   if (ctx.store.mode === "supabase" && !ctx.store.user) return toast("Inicia sesión y vuelve a compartir las fotos.", 8000);
   if (!getName()) return toast("Pon tu nombre en el perfil y vuelve a compartir las fotos.", 8000);
   toast(`Recibidas ${files.length} ${files.length === 1 ? "foto" : "fotos"} desde la galería`, 2500);
@@ -1025,10 +1132,13 @@ initExpenseDialog();
 initDiscover();
 initAccess();
 initPeople();
+initAvisos();
+initEncuentro({ chips: () => state.view === "map" && ctx.map?.ready() && ($("#map-chips").innerHTML = renderChips()) });
 
 try {
-  ctx.actions = { openDiscover, cameraChallenge, refresh, render, pickOnMap, focusPhotoOnMap, exportPdf, resumeSharedPlace, setSharing, focusPerson, showCodeStep: (email) => { state.loginEmail = email; state.loginStep = "code"; render(); } };
+  ctx.actions = { openDiscover, cameraChallenge, refresh, render, pickOnMap, focusPhotoOnMap, exportPdf, resumeSharedPlace, setSharing, focusPerson, alert: showAlert, showCodeStep: (email) => { state.loginEmail = email; state.loginStep = "code"; render(); } };
   ctx.store = await createStore(scheduleRefresh, schedulePeople);
+  if (ctx.store.mode === "supabase") await initCola(); // fotos guardadas en el móvil esperando señal (cola.js)
   ctx.map = createMap({
     container: $("#map"),
     onStop: selectStop,
@@ -1047,6 +1157,7 @@ try {
     /* sin sessionStorage */
   }
   await refresh();
+  colaStart();
   await receiveSharedPhotos().catch((err) => console.warn("Fotos compartidas:", err.message || err));
   await receiveSharedPlace().catch((err) => console.warn("Lugar compartido:", err.message || err));
 } catch (err) {

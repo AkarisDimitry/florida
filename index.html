@@ -36,20 +36,29 @@
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/dist/maplibre-gl.css">
   <link rel="stylesheet" href="css/styles.css">
   <link rel="stylesheet" href="css/juegos.css">
+  <link rel="stylesheet" href="css/bateria.css">
+  <link rel="stylesheet" href="css/ubicar.css">
   <link rel="stylesheet" href="css/juego-batalla.css">
   <link rel="stylesheet" href="css/juego-bolsa.css">
   <link rel="stylesheet" href="css/juego-bingo.css">
+  <link rel="stylesheet" href="css/cola.css">
+  <link rel="stylesheet" href="css/categorias.css">
+  <link rel="stylesheet" href="css/encuentro.css">
+  <link rel="stylesheet" href="css/avisos.css">
+  <link rel="stylesheet" href="css/chat.css">
+  <link rel="stylesheet" href="css/actualizar.css">
   <script defer src="https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
   <script type="module" src="js/app.js"></script>
 </head>
 <body data-view="map">
-  <script>document.body.dataset.view = { "#plan": "plan", "#gastos": "plan", "#cuentas": "plan", "#maleta": "plan", "#comida": "plan", "#fotos": "photos", "#juegos": "games", "#album": "album" }[location.hash] || "map";</script>
+  <script>document.body.dataset.view = { "#plan": "plan", "#gastos": "plan", "#cuentas": "plan", "#maleta": "plan", "#comida": "plan", "#fotos": "photos", "#chat": "chat", "#juegos": "games", "#album": "album" }[location.hash] || "map";</script>
   <header class="appbar">
     <div class="appbar-title">
       <h1 id="trip-name"></h1>
       <p class="appbar-sub" id="trip-sub"></p>
     </div>
     <div class="appbar-actions">
+      <button type="button" id="cola-chip" class="cola-chip" hidden aria-label="Fotos esperando señal"><span class="cola-chip-ico" aria-hidden="true">⏳</span><span class="cola-chip-n">0</span></button>
       <button type="button" id="live-chip" class="live-chip" hidden aria-label="Estás compartiendo tu ubicación. Pulsa para dejar de compartir"><span class="live-dot"></span>En vivo</button>
       <button type="button" id="people-btn" class="people-btn" hidden aria-label="Viajeros: quién está en línea" title="Viajeros: quién está en línea"><span class="online-dot" aria-hidden="true"></span><span class="people-ico" aria-hidden="true"></span><span id="people-count">0</span><span class="lbl">en línea</span></button>
       <button type="button" id="data-btn" class="icon-btn" aria-label="Datos y móvil" title="Datos y móvil"></button>
@@ -58,6 +67,8 @@
   </header>
 
   <div id="banner" class="banner" hidden></div>
+
+  <section id="chat-view" class="chat-view" hidden aria-label="Chat de la familia"></section>
 
   <main class="page" id="main" aria-live="polite"><div class="skeleton" aria-hidden="true"><i></i><i></i><i></i><i></i></div></main>
 
@@ -76,7 +87,9 @@
         <p class="panel-title">Qué mostrar</p>
         <label class="switch"><input type="checkbox" data-layer="stops"><span>Lugares</span></label>
         <label class="switch"><input type="checkbox" data-layer="routes"><span>Rutas</span></label>
+        <label class="switch"><input type="checkbox" data-layer="tracks"><span>Recorrido real</span></label>
         <label class="switch"><input type="checkbox" data-layer="photos"><span>Fotos</span></label>
+        <label class="switch"><input type="checkbox" data-layer="expenses"><span>Gastos</span></label>
         <label class="switch"><input type="checkbox" data-layer="friends"><span>Viajeros en vivo</span></label>
         <label class="switch" id="live-switch-row" hidden><input type="checkbox" id="live-switch"><span>Compartir mi ubicación</span></label>
         <p class="panel-title">Tipo de ruta</p>
@@ -94,11 +107,12 @@
     <button type="button" class="tab" data-view="map"></button>
     <button type="button" class="tab" data-view="plan"></button>
     <button type="button" class="tab" data-view="photos"></button>
+    <button type="button" class="tab" data-view="chat"></button>
     <button type="button" class="tab" data-view="games"></button>
     <button type="button" class="tab" data-view="album"></button>
   </nav>
 
-  <input type="file" id="photo-input" accept="image/*" multiple hidden>
+  <input type="file" id="photo-input" accept="image/*,.heic,.heif,.avif" multiple hidden>
 
   <dialog id="activity-dialog">
     <form id="activity-form" autocomplete="off">
@@ -171,6 +185,8 @@
         <button type="button" data-kind="gasto">Gasto</button>
         <button type="button" data-kind="compra"><span aria-hidden="true">🛒</span> Compra</button>
       </div>
+      <div id="expense-presets" class="presets" role="group" aria-label="Conceptos habituales"></div>
+      <fieldset class="cat-pick" id="expense-cat"></fieldset>
       <label><span id="expense-title-label">Concepto</span>
         <input name="title" required maxlength="120" placeholder="Cena en el puerto">
       </label>
@@ -185,6 +201,8 @@
           <input name="day" type="date" required>
         </label>
       </div>
+      <div id="expense-quick" class="quick-amounts" role="group" aria-label="Importes rápidos"></div>
+      <div id="expense-loc" class="loc-row" aria-live="polite"></div>
       <fieldset class="people-pick">
         <legend>¿Quién pagó?</legend>
         <div id="expense-payer" class="pick-row"></div>
@@ -309,6 +327,17 @@
         <div class="segmented" data-setting="distance"><button type="button" data-value="km">Kilómetros</button><button type="button" data-value="mi">Millas</button></div></div>
       <div class="setting"><span>Temperatura</span>
         <div class="segmented" data-setting="temperature"><button type="button" data-value="c">°C</button><button type="button" data-value="f">°F</button></div></div>
+    </section>
+    <section id="expense-loc-section">
+      <h3>Gastos</h3>
+      <div class="setting"><span>Poner ubicación a los gastos</span>
+        <div class="segmented" data-setting="expenseLocation"><button type="button" data-value="on">Sí</button><button type="button" data-value="off">No</button></div></div>
+      <p class="hint">Al apuntar un gasto nuevo se guarda dónde estás, para verlo en el mapa (capa «Gastos»). Solo lo ven los viajeros autorizados. Puedes quitarla o cambiarla en cada gasto.</p>
+    </section>
+    <section id="photo-loc-section">
+      <h3>Fotos</h3>
+      <label class="switch"><input type="checkbox" id="photo-loc-toggle"><span>Poner mi ubicación a las fotos que no la traen</span></label>
+      <p class="hint">Si la foto no trae el GPS, se guarda dónde estás al elegirla o hacerla, para verla en el mapa. Solo la ven los viajeros autorizados. Puedes moverla o quitarla después, abriendo la foto.</p>
     </section>
     <section id="live-section" hidden>
       <h3>Ubicación en vivo</h3>

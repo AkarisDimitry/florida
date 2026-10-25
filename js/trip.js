@@ -3,6 +3,7 @@ import { config } from "./config.js";
 import { state, ctx } from "./state.js";
 import { hasCoords, utc, dayColor, groupBy, todayIso } from "./util.js";
 import { distanceKm, pathKm, cachedRoute, fetchRoadRoute } from "./geo.js";
+import { describeBattery } from "./bateria.js";
 
 const { trip } = config;
 
@@ -106,7 +107,14 @@ export function dayTargets() {
 // Viajeros que comparten su ubicación ahora mismo (sin contarme a mí y sin posiciones de hace más de 20 min).
 export function friendsNow() {
   const me = ctx.store?.user?.id;
-  return state.live.filter((r) => r.user_id !== me && Date.now() - Date.parse(r.updated_at) < 20 * 60_000);
+  return state.live
+    .filter((r) => r.user_id !== me && Date.now() - Date.parse(r.updated_at) < 20 * 60_000)
+    .map((r) => {
+      // Su batería viaja con el latido de presencia (bateria.sql); si es reciente se enseña junto a su nombre en el mapa.
+      const beat = state.presence.find((p) => p.user_id === r.user_id);
+      const recent = beat?.battery != null && Date.now() - Date.parse(beat.last_seen) < 30 * 60_000;
+      return { ...r, battery: recent ? describeBattery(beat.battery, beat.charging)?.text ?? null : null };
+    });
 }
 
 export const totalCost = () => state.activities.reduce((sum, a) => sum + (a.cost || 0), 0);

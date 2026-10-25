@@ -7,6 +7,9 @@ const DEFAULTS = {
   theme: "auto", // auto | light | dark
   animations: "auto", // auto (sigue al sistema) | off
   showOnline: true, // aparecer "en línea" para los demás viajeros
+  shareBattery: true, // enviar el nivel de batería de este móvil junto con el latido (solo Chrome/Edge lo permiten)
+  locatePhotos: true, // poner mi ubicación (la de ahora) a las fotos que no traen GPS
+  expenseLocation: "on", // on | off: poner mi ubicación a los gastos nuevos, para verlos en el mapa
   accent: "ocean", // ocean | sunset | forest | grape | rose
   pdfMaps: true,
   pdfComments: true,

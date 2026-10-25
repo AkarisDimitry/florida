@@ -6,6 +6,7 @@ const PATHS = {
     '<path d="M4 8.5A2.5 2.5 0 0 1 6.5 6h1.2l1.3-2h6l1.3 2h1.2A2.5 2.5 0 0 1 20 8.5v9a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 17.5z"/><circle cx="12" cy="13" r="3.5"/>',
   food: '<path d="M6 3v6a3 3 0 0 0 6 0V3M9 3v18M17 21V3c-2.5 1.5-3.5 4-3.5 8h3.5"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
+  send: '<path d="M21 4 10.5 14.5M21 4l-6.5 17-4-6.5L4 10.5z"/>',
   x: '<path d="M6 6l12 12M18 6 6 18"/>',
   more: '<circle cx="5.5" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="18.5" cy="12" r="1.3"/>',
   locate:
@@ -42,6 +43,7 @@ const PATHS = {
   arrowRight: '<path d="M5 12h14M13 6l6 6-6 6"/>',
   sparkle: '<path d="M12 3.5 13.8 9l5.7 1.8-5.7 1.8L12 18l-1.8-5.4L4.5 10.8 10.2 9z"/><path d="M19 3v3M17.5 4.5h3"/>',
   heart: '<path d="M12 20s-7.5-4.5-7.5-10A4.2 4.2 0 0 1 12 7.6 4.2 4.2 0 0 1 19.5 10C19.5 15.5 12 20 12 20z"/>',
+  bell: '<path d="M6 17.5V11a6 6 0 0 1 12 0v6.5l1.5 1.5h-15z"/><path d="M10 21a2 2 0 0 0 4 0"/>',
 };
 
 export function icon(name, size = 20) {

@@ -9,6 +9,7 @@ import { buildAlbum } from "./album.js";
 import { mapImage } from "./mapimage.js";
 import { fetchRoadRoute } from "./geo.js";
 import { routePlan, dayTargets } from "./trip.js";
+import { CATEGORIES } from "./categorias.js";
 
 const JSPDF = "https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js";
 const W = 210;
@@ -540,6 +541,67 @@ class Book {
     });
   }
 
+  // «Gastos por categoría»: barras por categoría y, por persona, una barra apilada con lo que le toca y lo que pagó (sin emojis en el texto:
+  // los de las categorías van como imagen, igual que en «Gastos»).
+  categories() {
+    const c = this.album.categories;
+    if (!c || !c.total) return;
+    const d = this.doc;
+    this.context = "Gastos por categoría";
+    this.page("");
+    this.heading("Gastos por categoría", { size: 22 });
+    this.text(money.format(c.total / 100), { size: 26, style: "bold", color: C.brand, gap: 0.5 });
+    this.text(`en ${c.count} ${c.count === 1 ? "apunte repartido" : "apuntes repartidos"}`, { size: 10, color: C.muted, gap: 4 });
+    this.subheading("Por categoría");
+    for (const r of c.rows) {
+      this.need(8);
+      d.addImage(emojiPng(r.emoji), "PNG", M, this.y, 4.6, 4.6);
+      d.setFont("helvetica", "normal");
+      d.setFontSize(9.5);
+      this.ink(C.ink);
+      d.text(latin(r.label), M + 6.4, this.y + 3.5);
+      const bx = M + 40;
+      const bw = CW - 40 - 40;
+      this.fill(C.soft);
+      d.roundedRect(bx, this.y + 0.4, bw, 4, 2, 2, "F");
+      this.fill(r.color);
+      d.roundedRect(bx, this.y + 0.4, Math.max(3, (r.cents / c.rows[0].cents) * bw), 4, 2, 2, "F");
+      d.setFont("helvetica", "bold");
+      this.ink(C.ink);
+      d.text(latin(money.format(r.cents / 100)), W - M - 11, this.y + 3.5, { align: "right" });
+      d.setFont("helvetica", "normal");
+      this.ink(C.muted);
+      d.text(latin(r.cents * 100 < c.total ? "<1 %" : `${Math.round((r.cents * 100) / c.total)} %`), W - M, this.y + 3.5, { align: "right" });
+      this.y += 7.4;
+    }
+    const perPerson = (data, title) => {
+      if (!data.rows.length) return;
+      this.subheading(title);
+      const max = data.rows[0].cents;
+      for (const p of data.rows) {
+        this.need(19);
+        d.setFont("helvetica", "bold");
+        d.setFontSize(10);
+        this.ink(C.ink);
+        d.text(latin(p.name), M, this.y + 3.6, { maxWidth: CW - 34 });
+        d.text(latin(money.format(p.cents / 100)), W - M, this.y + 3.6, { align: "right" });
+        const parts = CATEGORIES.filter((k) => p.byCat.get(k.key));
+        let x = M;
+        for (const k of parts) {
+          const w = (CW * (p.cents / max) * p.byCat.get(k.key)) / p.cents;
+          this.fill(k.color);
+          d.rect(x, this.y + 5.2, w, 3.2, "F");
+          x += w;
+        }
+        this.y += 10;
+        this.text(parts.map((k) => `${k.label} ${money.format(p.byCat.get(k.key) / 100)}`).join("  ·  "), { size: 8.4, color: C.muted, gap: 2.4 });
+      }
+    };
+    perPerson(c.owed, "Lo que le toca a cada uno");
+    perPerson(c.paid, "Lo que pagó cada uno");
+    if (c.guessed) this.text(`${c.guessed} ${c.guessed === 1 ? "apunte" : "apuntes"} sin categoría guardada: se ${c.guessed === 1 ? "calcula" : "calculan"} por las palabras del concepto.`, { size: 8.4, color: C.muted, gap: 2 });
+  }
+
   ledger() {
     const l = this.album.ledger;
     if (!l) return;
@@ -995,6 +1057,7 @@ export async function exportAlbumPdf({ share = false, onProgress = (text) => toa
   book.daySummary();
   for (const c of album.chapters) book.chapter(c);
   book.expenses();
+  book.categories();
   book.ledger();
   book.food();
   book.games();

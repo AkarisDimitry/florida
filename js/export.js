@@ -4,6 +4,7 @@ import { state } from "./state.js";
 import { esc, categoryOf, download, slug, toast, hasCoords } from "./util.js";
 import { currentRoutes, locatedStops, photoTime, photosNewestFirst, tripPhotos } from "./trip.js";
 import { shares, isValid } from "./ledger.js";
+import { categoryOf as expenseCategory, categoryInfo } from "./categorias.js"; // (categoryOf de util.js es la de las actividades)
 
 const { trip } = config;
 const stamp = () => new Date().toISOString().slice(0, 10);
@@ -47,12 +48,12 @@ export function exportCsv() {
 
 // Gastos repartidos: una fila por gasto, con quién pagó, entre quién se reparte y lo que le toca a cada uno.
 export function exportExpensesCsv() {
-  const header = ["dia", "tipo", "concepto", "tienda", "importe", "pago", "reparto", "autor"];
+  const header = ["dia", "tipo", "concepto", "categoria", "tienda", "latitud", "longitud", "importe", "pago", "reparto", "autor"];
   const rows = [...state.expenses]
     .filter(isValid)
     .sort((a, b) => a.day.localeCompare(b.day) || a.created_at.localeCompare(b.created_at))
     // "reparto" usa el mismo cálculo que la web (en céntimos), no importe / personas: 10 € entre 3 son 3,34 + 3,33 + 3,33.
-    .map((e) => [e.day, e.kind === "compra" ? "compra" : "gasto", e.title, e.place, num(Number(e.amount)), e.paid_by, [...shares(e)].map(([name, c]) => `${name}: ${num((c / 100).toFixed(2))}`).join("; "), e.created_by_name]);
+    .map((e) => [e.day, e.kind === "compra" ? "compra" : "gasto", e.title, categoryInfo(expenseCategory(e)).label, e.place, num(e.lat), num(e.lng), num(Number(e.amount)), e.paid_by, [...shares(e)].map(([name, c]) => `${name}: ${num((c / 100).toFixed(2))}`).join("; "), e.created_by_name]);
   if (!rows.length) throw new Error("Todavía no hay gastos repartidos que exportar.");
   const text = [header, ...rows].map((r) => r.map(csvCell).join(";")).join("\r\n");
   download(`${baseName()}-gastos-${stamp()}.csv`, "text/csv", `﻿${text}`);

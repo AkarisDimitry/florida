@@ -1,0 +1,142 @@
+/* ============ categorías de gasto: «¿En qué gastamos?», elegir categoría en el diálogo y el bloque del álbum ============ */
+
+/* Un color por categoría. `--cat` lo usan barras, puntos y bordes; el texto siempre va con el color normal de la app, así que
+   el contraste no depende de ellos. `light-dark()` toma el tono claro u oscuro (sin soporte se queda el claro). */
+.cat-nafta { --cat: #b45309; }
+.cat-comida { --cat: #dc2626; }
+.cat-salidas { --cat: #7c3aed; }
+.cat-transporte { --cat: #2563eb; }
+.cat-alojamiento { --cat: #0f766e; }
+.cat-compras { --cat: #4d7c0f; }
+.cat-salud { --cat: #db2777; }
+.cat-otros { --cat: #64748b; }
+@supports (color: light-dark(#000, #fff)) {
+  .cat-nafta { --cat: light-dark(#b45309, #fbbf24); }
+  .cat-comida { --cat: light-dark(#dc2626, #f87171); }
+  .cat-salidas { --cat: light-dark(#7c3aed, #a78bfa); }
+  .cat-transporte { --cat: light-dark(#2563eb, #60a5fa); }
+  .cat-alojamiento { --cat: light-dark(#0f766e, #2dd4bf); }
+  .cat-compras { --cat: light-dark(#4d7c0f, #a3e635); }
+  .cat-salud { --cat: light-dark(#db2777, #f472b6); }
+  .cat-otros { --cat: light-dark(#64748b, #94a3b8); }
+}
+
+/* ---------- tarjeta de Cuentas (y bloque del álbum) ---------- */
+.cat-card { margin: 0 0 16px; padding: 14px; border-radius: var(--radius-sm); background: var(--surface); border: 1px solid var(--line); box-shadow: var(--shadow-sm); }
+.cat-title { margin: 0 0 4px; font-size: 0.74rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+.cat-total { margin: 0; font-size: 1.8rem; font-weight: 800; line-height: 1.1; letter-spacing: -0.03em; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.cat-sub { margin: 2px 0 0; font-size: 0.82rem; color: var(--muted); }
+.cat-switch { margin: 12px 0 10px; }
+.cat-card .hint { margin: 0 0 10px; font-size: 0.82rem; }
+.cat-card .cat-foot { margin: 12px 0 0; }
+
+.cat-list { display: grid; gap: 6px; }
+.cat-row {
+  display: grid; gap: 5px; width: 100%; min-height: 56px; padding: 10px 12px; text-align: left; font: inherit; color: var(--text);
+  border-radius: 14px; border: 1px solid var(--line); background: var(--surface-2);
+}
+button.cat-row { cursor: pointer; transition: background 0.2s, border-color 0.2s, transform 0.25s var(--spring); touch-action: manipulation; }
+button.cat-row:active { transform: scale(0.985); }
+@media (hover: hover) { button.cat-row:hover { border-color: color-mix(in srgb, var(--cat) 55%, var(--line)); } }
+button.cat-row[aria-pressed="true"] { border-color: var(--cat); background: color-mix(in srgb, var(--cat) 14%, var(--surface)); box-shadow: inset 0 0 0 1px var(--cat); }
+.cat-row.is-static { min-height: 0; }
+.cat-top { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; min-width: 0; }
+.cat-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.92rem; font-weight: 700; }
+.cat-amount { flex: none; font-variant-numeric: tabular-nums; white-space: nowrap; font-weight: 800; }
+.cat-bar { display: block; height: 8px; border-radius: 999px; overflow: hidden; background: color-mix(in srgb, var(--cat) 16%, transparent); }
+.cat-bar i { display: block; height: 100%; border-radius: 999px; background: var(--cat); }
+.cat-meta { font-size: 0.78rem; color: var(--muted); }
+
+/* por persona */
+.cat-people { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
+.cat-person { display: grid; gap: 8px; padding: 12px; border-radius: 14px; border: 1px solid var(--line); background: var(--surface-2); min-width: 0; }
+.cat-person-head { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.cat-person-head .person-dot { width: 30px; height: 30px; font-size: 0.82rem; }
+.cat-person-head strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cat-stack { display: flex; height: 10px; border-radius: 999px; overflow: hidden; gap: 1px; background: var(--line); }
+.cat-stack i { display: block; min-width: 2px; background: var(--cat); }
+.cat-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 0; padding: 0; list-style: none; font-size: 0.8rem; }
+.cat-legend li { display: inline-flex; align-items: center; gap: 4px; min-width: 0; }
+.cat-legend b { font-variant-numeric: tabular-nums; }
+.cat-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--cat); flex: none; }
+
+/* aviso sobre la lista cuando se filtra */
+.cat-note {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 10px 0 4px; padding: 6px 6px 6px 14px; border-radius: 999px; font-size: 0.85rem;
+  background: color-mix(in srgb, var(--cat) 14%, var(--surface)); border: 1px solid var(--cat); scroll-margin-top: calc(var(--appbar-h) + var(--safe-t) + 10px);
+}
+.cat-note b { font-weight: 750; }
+
+/* ---------- elegir la categoría en el diálogo de gasto ---------- */
+.cat-pick { margin: 0; padding: 0; border: 0; min-width: 0; }
+.cat-pick legend { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; padding: 0; margin-bottom: 6px; font-size: 0.82rem; font-weight: 650; color: var(--muted); }
+.cat-pick legend small { font-size: 0.8rem; font-weight: 650; color: var(--text); }
+.cat-chips { position: relative; display: flex; gap: 6px; margin: 0 -2px; padding: 2px 2px 6px; overflow-x: auto; scroll-snap-type: x proximity; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+.cat-chips::-webkit-scrollbar { display: none; }
+@media (hover: hover) and (pointer: fine) { .cat-chips { flex-wrap: wrap; overflow: visible; } }
+.cat-chip {
+  flex: none; scroll-snap-align: start; white-space: nowrap; display: inline-flex; align-items: center; gap: 5px; padding: 6px 11px; border-radius: 999px; font-size: 0.8rem; font-weight: 600;
+  color: var(--text); background: var(--surface-2); border: 1px solid var(--line); cursor: pointer; touch-action: manipulation;
+  transition: background 0.2s, border-color 0.2s, transform 0.2s var(--spring);
+}
+.cat-chip:active { transform: scale(0.95); }
+.cat-chip[aria-pressed="true"] { border: 2px solid var(--cat, var(--accent)); padding: 5px 10px; background: color-mix(in srgb, var(--cat, var(--accent)) 16%, var(--surface-2)); font-weight: 750; }
+.cat-chip.is-suggested { border: 1px dashed var(--cat); background: color-mix(in srgb, var(--cat) 8%, var(--surface-2)); }
+.cat-chip.is-none { color: var(--muted); }
+.cat-chip.is-none[aria-pressed="true"] { --cat: var(--muted); color: var(--text); }
+@media (hover: hover) { .cat-chip:hover:not([aria-pressed="true"]) { background: var(--accent-soft); } }
+@media (pointer: coarse) { .cat-chip { min-height: 40px; padding: 8px 13px; } .cat-chip[aria-pressed="true"] { padding: 7px 12px; } }
+.cat-pick .hint { margin: 2px 0 0; font-size: 0.8rem; }
+
+/* ---------- importes rápidos del diálogo de gasto ---------- */
+.quick-amounts { display: flex; gap: 6px; margin: -4px -2px 0; padding: 2px 2px 4px; overflow-x: auto; scroll-snap-type: x proximity; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+.quick-amounts::-webkit-scrollbar { display: none; }
+@media (hover: hover) and (pointer: fine) { .quick-amounts { flex-wrap: wrap; overflow: visible; } }
+.quick {
+  flex: 1 0 auto; min-width: 48px; scroll-snap-align: start; white-space: nowrap; padding: 6px 12px; border-radius: 999px; font-size: 0.85rem; font-weight: 700; text-align: center; font-variant-numeric: tabular-nums;
+  color: var(--text); background: var(--surface-2); border: 1px solid var(--line); cursor: pointer; touch-action: manipulation; transition: background 0.2s, color 0.2s, transform 0.2s var(--spring);
+}
+.quick:active { transform: scale(0.95); }
+.quick[aria-pressed="true"] { background: var(--accent); border-color: transparent; color: var(--accent-ink); }
+@media (hover: hover) { .quick:hover:not([aria-pressed="true"]) { background: var(--accent-soft); } }
+@media (pointer: coarse) { .quick { min-height: 40px; padding: 8px 14px; } }
+
+/* ---------- ubicación del gasto ---------- */
+.loc-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 10px; padding: 10px 12px; border-radius: 16px; border: 1px dashed var(--line); background: var(--surface-2); min-width: 0; }
+.loc-row[hidden] { display: none; }
+.loc-text { flex: 1 1 140px; min-width: 0; display: grid; gap: 1px; font-size: 0.88rem; }
+.loc-text small { font-size: 0.78rem; color: var(--muted); overflow-wrap: anywhere; }
+.loc-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.loc-actions .btn { white-space: nowrap; }
+
+/* en el móvil el botón de guardar queda siempre a la vista: un gasto típico es atajo → importe → Guardar */
+/* (el diálogo tiene 22 px de relleno abajo: el -22 pega la barra al borde y no deja ver el contenido por debajo) */
+#expense-dialog .dialog-actions { position: sticky; bottom: -22px; z-index: 3; margin: 0 -4px -22px; padding: 12px 4px 14px; background: linear-gradient(to bottom, transparent, var(--surface) 14px); }
+#expense-dialog .dialog-actions { gap: 6px; }
+#expense-dialog .dialog-actions .btn { padding-inline: 14px; } /* en 320 px caben «Borrar», «Cancelar» y «Guardar» en una sola fila */
+@media (max-width: 560px) { #expense-dialog .dialog-actions { bottom: calc(-22px - var(--safe-b)); margin-bottom: calc(-22px - var(--safe-b)); padding-bottom: calc(14px + var(--safe-b)); } }
+
+/* ---------- gastos en el mapa ---------- */
+.gasto-pin {
+  position: relative; z-index: 3; width: 40px; height: 40px; padding: 0; display: grid; place-items: center; border-radius: 50%; font-size: 1.2rem; line-height: 1; cursor: pointer;
+  background: var(--surface); border: 3px solid var(--cat, #64748b); box-shadow: 0 3px 8px rgb(0 0 0 / 0.3); touch-action: manipulation; -webkit-touch-callout: none; user-select: none;
+}
+.gasto-pin:active { transform: scale(0.94); }
+@media (hover: hover) { .gasto-pin:hover { z-index: 5; } }
+.gasto-count { position: absolute; top: -7px; right: -7px; min-width: 20px; height: 20px; padding: 0 5px; display: grid; place-items: center; border-radius: 999px; background: var(--cat, #64748b); color: #fff; font-size: 0.72rem; font-weight: 800; line-height: 1; font-style: normal; border: 2px solid var(--surface); }
+.map.is-picking .gasto-pin { pointer-events: none; }
+.gasto-popup { z-index: 6; max-width: min(300px, calc(100vw - 32px)) !important; }
+.gasto-popup .maplibregl-popup-content { padding: 12px; border-radius: 16px; background: var(--surface); color: var(--text); box-shadow: var(--shadow-lg); border-top: 4px solid var(--cat, var(--accent)); }
+.gasto-popup.maplibregl-popup-anchor-top .maplibregl-popup-tip, .gasto-popup.maplibregl-popup-anchor-top-left .maplibregl-popup-tip, .gasto-popup.maplibregl-popup-anchor-top-right .maplibregl-popup-tip { border-bottom-color: var(--cat, var(--accent)); }
+.gasto-popup.maplibregl-popup-anchor-bottom .maplibregl-popup-tip, .gasto-popup.maplibregl-popup-anchor-bottom-left .maplibregl-popup-tip, .gasto-popup.maplibregl-popup-anchor-bottom-right .maplibregl-popup-tip { border-top-color: var(--surface); }
+.gasto-popup.maplibregl-popup-anchor-left .maplibregl-popup-tip { border-right-color: var(--surface); }
+.gasto-popup.maplibregl-popup-anchor-right .maplibregl-popup-tip { border-left-color: var(--surface); }
+.gasto-card { display: grid; gap: 8px; min-width: 200px; }
+.gasto-head { margin: 0; font-size: 0.74rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+.gasto-card ul { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; max-height: min(190px, 26dvh); overflow-y: auto; }
+.gasto-item { display: grid; gap: 2px; width: 100%; min-height: 48px; padding: 8px 10px; text-align: left; font: inherit; color: inherit; border-radius: 12px; border: 1px solid var(--line); background: var(--surface-2); cursor: pointer; touch-action: manipulation; }
+.gasto-line { display: flex; justify-content: space-between; gap: 10px; min-width: 0; }
+.gasto-line strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gasto-line b { flex: none; font-variant-numeric: tabular-nums; }
+.gasto-item small { font-size: 0.78rem; color: var(--muted); overflow-wrap: anywhere; }
+.gasto-close { justify-self: end; }

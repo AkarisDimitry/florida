@@ -6,6 +6,7 @@ import { getName } from "./store.js";
 import { packingTips } from "./weather.js";
 import { allDays } from "./trip.js";
 import { balances, settlements, totalCents, shares, canonical, people, hueOf, cents, fromCents } from "./ledger.js";
+import { renderCategoryCard, categoryNote, matchesCategory, categoryOf, categoryInfo, categoryTotals } from "./categorias.js";
 
 const eur = (c) => money.format(fromCents(c));
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
@@ -45,6 +46,8 @@ export function ledgerText() {
     lines.push("Para quedar en paz:");
     for (const p of pay) lines.push(`• ${p.from} paga ${eur(p.cents)} a ${p.to}`);
   } else lines.push("Todos en paz: nadie debe nada 🎉");
+  const cats = categoryTotals().rows;
+  if (cats.length) lines.push("", "En qué gastamos:", ...cats.map((c) => `• ${c.emoji} ${c.label}: ${eur(c.cents)}`));
   lines.push("", "Saldo de cada uno:");
   for (const r of rows) lines.push(`• ${r.name}: pagó ${eur(r.paid)}, le toca ${eur(r.owed)} (${r.balance > 0 ? "le deben " : r.balance < 0 ? "debe " : "al día"}${r.balance ? eur(Math.abs(r.balance)) : ""})`);
   return lines.join("\n");
@@ -104,7 +107,7 @@ export function renderExpenses() {
   const filters = `<div class="filter-row wrap">${[["todo", "Todo"], ["gasto", "Gastos"], ["compra", "🛒 Compras"]]
     .map(([k, label]) => `<button type="button" class="chip-filter ${filter === k ? "is-on" : ""}" data-action="cuentas-filter" data-kind="${k}">${label} <small>${counts[k]}</small></button>`)
     .join("")}</div>`;
-  const shown = state.expenses.filter((e) => filter === "todo" || kindOf(e) === filter);
+  const shown = state.expenses.filter((e) => (filter === "todo" || kindOf(e) === filter) && matchesCategory(e)); // y, si se tocó una categoría en «¿En qué gastamos?», solo esa
   // Resumen de compras: cuánto ha comprado (pagado) cada uno.
   const buyers = new Map();
   for (const e of state.expenses.filter((x) => kindOf(x) === "compra")) buyers.set(e.paid_by, (buyers.get(e.paid_by) ?? 0) + cents(e.amount));
@@ -131,7 +134,7 @@ export function renderExpenses() {
           const ticket = state.photos.some((p) => p.expense_id === e.id);
           return `<button type="button" class="exp" data-action="edit-expense" data-id="${esc(e.id)}">
             ${avatar(e.paid_by)}
-            <span class="exp-text"><strong>${kindOf(e) === "compra" ? "🛒 " : ""}${esc(e.title)}</strong><small>Pagó ${esc(e.paid_by)} · ${esc(who)}${e.place ? ` · en ${esc(e.place)}` : ""}${e.activity_id ? " · de una actividad" : ""}${ticket ? " · con ticket" : ""}</small></span>
+            <span class="exp-text"><strong>${kindOf(e) === "compra" ? "🛒 " : ""}${esc(e.title)}</strong><small>Pagó ${esc(e.paid_by)} · ${esc(who)} · ${categoryInfo(categoryOf(e)).emoji} ${esc(categoryInfo(categoryOf(e)).label)}${Number.isFinite(e.lat) && Number.isFinite(e.lng) ? " · 📍" : ""}${e.place ? ` · en ${esc(e.place)}` : ""}${e.activity_id ? " · de una actividad" : ""}${ticket ? " · con ticket" : ""}</small></span>
             <span class="exp-amount">${esc(money.format(Number(e.amount)))}</span>
           </button>`;
         })
@@ -145,7 +148,7 @@ export function renderExpenses() {
       <div class="ledger-side">${hero}
         <h3 class="sec-title">Para quedar en paz</h3>${settle}
         <h3 class="sec-title">Saldo de cada uno</h3><ul class="people">${person}</ul></div>
-      <div class="ledger-main">${filters}${purchaseSummary}<h3 class="sec-title">${filter === "compra" ? "Compras" : filter === "gasto" ? "Gastos" : "Movimientos"}</h3>${days}</div>
+      <div class="ledger-main">${renderCategoryCard()}${filters}${categoryNote()}${purchaseSummary}<h3 class="sec-title">${filter === "compra" ? "Compras" : filter === "gasto" ? "Gastos" : "Movimientos"}</h3>${days || `<p class="hint">No hay ${filter === "compra" ? "compras" : filter === "gasto" ? "gastos" : "apuntes"} con ese filtro.</p>`}</div>
     </div>`;
 }
 

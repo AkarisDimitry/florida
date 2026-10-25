@@ -409,6 +409,7 @@ export function openSettings() {
   syncSettings();
   $("#live-section").hidden = ctx.store?.mode !== "supabase";
   $("#live-toggle").checked = Boolean(state.sharing);
+  $("#photo-loc-toggle").checked = settings.locatePhotos !== false;
   settingsDialog.showModal();
 }
 
@@ -432,6 +433,7 @@ function bindSettings() {
     setSetting(button.closest("[data-setting]").dataset.setting, button.dataset.value);
     syncSettings();
   });
+  $("#photo-loc-toggle").addEventListener("change", (event) => setSetting("locatePhotos", event.target.checked)); // fotos sin GPS: poner mi ubicación
 
   const run = (share) =>
     guarded(async () => {

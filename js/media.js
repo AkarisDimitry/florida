@@ -1,10 +1,11 @@
 // Cámara y micrófono: elegir o hacer una foto y grabar una nota de voz. Todo desde el navegador, sin librerías.
+import { PHOTO_ACCEPT } from "./formatos.js";
 
 // Abre la cámara (en el móvil) o el selector de archivos. Devuelve la lista de archivos elegidos ([] si se cancela).
 // Tiene que llamarse directamente desde un toque: iOS no deja abrir el selector pasado un instante.
 export function pickFiles({ camera = false, multiple = false } = {}) {
   return new Promise((resolve) => {
-    const input = Object.assign(document.createElement("input"), { type: "file", accept: "image/*", multiple });
+    const input = Object.assign(document.createElement("input"), { type: "file", accept: PHOTO_ACCEPT, multiple });
     if (camera) input.setAttribute("capture", "environment"); // el atributo, no la propiedad: algunos navegadores solo reconocen el atributo
     input.style.display = "none";
     document.body.append(input);

@@ -1,7 +1,7 @@
 // Estado compartido entre módulos. `ctx` guarda las piezas que se crean al arrancar (store, mapa)
 // y las acciones de app.js que otros módulos necesitan llamar sin importar app.js (evita ciclos).
-export const VIEWS = ["map", "plan", "photos", "games", "album"];
-const HASHES = { "#mapa": "map", "#plan": "plan", "#fotos": "photos", "#juegos": "games", "#album": "album", "#comida": "plan", "#cuentas": "plan", "#gastos": "plan", "#maleta": "plan" };
+export const VIEWS = ["map", "plan", "photos", "chat", "games", "album"];
+const HASHES = { "#mapa": "map", "#plan": "plan", "#fotos": "photos", "#juegos": "games", "#chat": "chat", "#album": "album", "#comida": "plan", "#cuentas": "plan", "#gastos": "plan", "#maleta": "plan" };
 // El Itinerario tiene cuatro secciones: los días, dónde comimos, las cuentas (gastos y compras) y la lista de la maleta.
 export const PLAN_TABS = ["days", "food", "expenses", "packing"];
 const PLAN_HASHES = { "#comida": "food", "#cuentas": "expenses", "#gastos": "expenses", "#maleta": "packing" };
@@ -47,7 +47,7 @@ export const state = {
   view: HASHES[location.hash] ?? "map",
   planTab: PLAN_HASHES[location.hash] ?? "days", // sección del Itinerario
   day: null, // día elegido en el mapa (AAAA-MM-DD); null = todo el viaje
-  layers: { stops: true, routes: true, photos: true, friends: true, ...read("viaje.capas", {}) },
+  layers: { stops: true, routes: true, photos: true, friends: true, expenses: true, tracks: true, ...read("viaje.capas", {}) },
   roadMode: read("viaje.rutaCarretera", true), // true = ruta por carretera, false = línea recta
   weather: new Map(), // día -> tiempo (weather.js)
   places: {}, // día -> ciudad

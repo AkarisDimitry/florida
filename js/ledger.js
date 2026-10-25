@@ -6,7 +6,7 @@ import { getName } from "./store.js";
 export const cents = (amount) => Math.round(Number(amount) * 100);
 export const fromCents = (c) => c / 100;
 
-const clean = (name) => String(name ?? "").trim().replace(/\s+/g, " ").slice(0, 40);
+export const clean = (name) => String(name ?? "").trim().replace(/\s+/g, " ").slice(0, 40);
 
 // Nombres conocidos, sin duplicar por mayúsculas ("ana" y "Ana" son la misma persona). Conserva la primera grafía.
 export function people(extra = []) {

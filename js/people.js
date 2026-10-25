@@ -6,10 +6,12 @@ import { $, esc, ago } from "./util.js";
 import { getName } from "./store.js";
 import { settings } from "./settings.js";
 import { people, hueOf } from "./ledger.js";
-import { setShowOnline } from "./presence.js";
+import { setShowOnline, setShareBattery } from "./presence.js";
+import { describeBattery, batterySupported } from "./bateria.js";
 
 const ONLINE_MS = 100_000; // un latido de hace menos de ~100 s cuenta como "en línea"
 const LIVE_MS = 30 * 60_000; // una posición de hace más de 30 min ya no se muestra
+const BATTERY_MS = 6 * 3_600_000; // una batería de hace más de 6 h ya no se muestra (el móvil habrá cambiado mucho)
 const key = (name) => String(name ?? "").trim().toLowerCase();
 
 export function peopleRows() {
@@ -18,7 +20,7 @@ export function peopleRows() {
   const rows = new Map();
   const row = (name) => {
     const k = key(name);
-    if (!rows.has(k)) rows.set(k, { name: String(name || "Viajero").trim(), id: null, lastSeen: 0, online: false, loc: null, me: Boolean(mine) && k === mine });
+    if (!rows.has(k)) rows.set(k, { name: String(name || "Viajero").trim(), id: null, lastSeen: 0, online: false, loc: null, battery: null, me: Boolean(mine) && k === mine });
     return rows.get(k);
   };
   const now = Date.now();
@@ -29,6 +31,9 @@ export function peopleRows() {
     r.lastSeen = Math.max(r.lastSeen, t);
     r.online ||= now - t < ONLINE_MS;
     r.me ||= p.user_id === myId;
+    // La batería viaja con el latido: vale lo que dura el latido y se descarta si es muy viejo o la persona no la comparte.
+    const battery = p.battery == null || now - t > BATTERY_MS ? null : describeBattery(p.battery, p.charging);
+    if (battery && t >= (r.batteryAt ?? 0)) Object.assign(r, { battery, batteryAt: t });
   }
   for (const l of state.live) {
     const r = row(l.name);
@@ -57,16 +62,22 @@ export function renderPeople() {
       <span class="person-dot lg" style="--h:${hueOf(r.name)}" aria-hidden="true">${esc(r.name.charAt(0).toUpperCase())}${r.online ? `<i class="on" aria-hidden="true"></i>` : ""}</span>
       <div class="req-text"><strong>${esc(r.name)}${r.me ? ` <small class="you">tú</small>` : ""}</strong>
         <small>${statusOf(r)}</small>
+        ${r.battery ? `<small class="batt batt-${r.battery.state}">${esc(r.battery.text)}${r.battery.state === "low" || r.battery.state === "critical" ? " · poca batería" : r.battery.charging ? " · cargando" : ""}${r.online ? "" : ` · ${esc(ago(r.batteryAt))}`}</small>` : ""}
         ${r.loc ? `<small class="loc">${icon("pin", 13)} Compartiendo su ubicación · ${esc(ago(r.loc.at))}</small><button type="button" class="btn small" data-person="${i}">${icon("map", 15)} Ver dónde está</button>` : ""}</div>
     </li>`,
     )
     .join("");
   $("#people-body").dataset.rows = JSON.stringify(rows.map((r) => r.loc ?? null));
   const sharing = ctx.store?.mode === "supabase";
+  // Quien tiene poca batería (y no la está cargando) sale arriba, para que el grupo lo vea sin buscar.
+  const low = rows.filter((r) => !r.me && r.battery && (r.battery.state === "low" || r.battery.state === "critical") && Date.now() - r.batteryAt < 30 * 60_000);
+  const lowNote = low.length ? `<p class="batt-warn" role="status">🪫 ${low.map((r) => `${esc(r.name)} (${r.battery.level} %)`).join(", ")} ${low.length === 1 ? "tiene" : "tienen"} poca batería.</p>` : "";
   $("#people-body").innerHTML = `
+    ${lowNote}
     <ul class="viajeros">${list}</ul>
     <section><h3>Para ti</h3>
       <label class="switch"><input type="checkbox" id="people-online" ${settings.showOnline ? "checked" : ""}><span>Mostrar que estoy en línea</span></label>
+      ${sharing ? (batterySupported() ? `<label class="switch"><input type="checkbox" id="people-battery" ${settings.shareBattery ? "checked" : ""}><span>Compartir la batería de mi móvil</span></label>` : `<p class="hint">🔋 Este navegador no deja compartir la batería (iPhone/Safari y Firefox no pueden). Quien use Chrome o Edge en Android sí la comparte.</p>`) : ""}
       ${sharing ? `<label class="switch"><input type="checkbox" id="people-live" ${state.sharing ? "checked" : ""}><span>Compartir mi ubicación con los viajeros</span></label>` : ""}
       <p class="hint">Solo lo ven los viajeros autorizados. La ubicación se comparte únicamente mientras tengas la web abierta con esto activado; puedes dejar de compartirla cuando quieras.</p>
     </section>`;
@@ -92,6 +103,7 @@ export function initPeople() {
   });
   $("#people-body").addEventListener("change", (event) => {
     if (event.target.id === "people-online") setShowOnline(event.target.checked);
+    if (event.target.id === "people-battery") setShareBattery(event.target.checked);
     if (event.target.id === "people-live") ctx.actions.setSharing(event.target.checked);
   });
 }

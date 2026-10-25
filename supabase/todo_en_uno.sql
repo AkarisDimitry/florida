@@ -1422,105 +1422,189 @@ $instalar$;
 -- ======================================================================
 do $instalar$
 begin
-  if to_regclass('public.invest_accounts') is null then
+  if to_regclass('public.market_quotes') is null then
     raise notice 'Aplicando juego_bolsa.sql...';
     execute $parte_juego_bolsa$
--- Juego «Bolsa de valores»: mercado ficticio con temática de viaje. Ejecutar en Supabase → SQL Editor DESPUÉS de
--- schema.sql y acceso.sql (usa public.is_member() y public.is_admin()). Una sola vez. No depende de ningún otro archivo.
+-- Juego «Bolsa de valores» con PRECIOS REALES y dinero ficticio. Ejecutar en Supabase → SQL Editor DESPUÉS de schema.sql
+-- y acceso.sql (usa public.is_member() y public.is_admin()). Una sola vez. No depende de ningún otro archivo.
 --
--- Cada viajero entra con 200.000 $ de mentira y compra y vende 10 activos inventados. Todos ven las cuentas, las
--- carteras y cada operación de todos (la transparencia es parte del juego).
+-- Cada viajero entra con 200.000 $ de mentira y compra y vende 12 activos REALES (acciones de Disney, Carnival, Royal
+-- Caribbean, Marriott, Delta, Apple, Tesla, Nvidia, Amazon y Microsoft, y las criptomonedas Bitcoin y Ethereum) a su precio de
+-- verdad y en directo. Todos ven las cuentas, las carteras y cada operación de todos (la transparencia es parte del juego).
 --
--- QUIÉN MANDA: la base de datos. Ni el navegador ni ninguna API externa ponen los precios, ni escriben cuentas u
--- operaciones. Los clientes solo pueden LEER (con RLS: solo los viajeros) y todo lo que escribe va por funciones
--- `security definer` que toman al usuario de auth.uid() (nunca de un parámetro) y comprueban saldo y posición.
+-- QUIÉN MANDA: la base de datos. El navegador NUNCA envía un precio ni escribe cuentas u operaciones: los clientes solo pueden
+-- LEER (con RLS: solo los viajeros) y todo lo que se escribe va por funciones `security definer` que toman al usuario de
+-- auth.uid() y comprueban saldo, posición y precio.
+--
+-- DE DÓNDE SALEN LOS PRECIOS: de Yahoo Finance (https://query1.finance.yahoo.com/v8/finance/chart/<SÍMBOLO>), que no admite
+-- peticiones desde el navegador (no tiene CORS), así que las hace la propia base de datos:
+--   · pg_cron ejecuta CADA MINUTO public.market_tick();
+--   · market_tick() (1) recoge las respuestas ya terminadas de net._http_response (pg_net) de las peticiones del minuto
+--     anterior, las valida y guarda la cotización, y (2) lanza las nuevas con net.http_get (asíncrono).
+--   · La última cotización buena queda en public.market_quotes (precio, cierre anterior, hora del último trade según Yahoo y
+--     hora en que se recogió); cada cambio de precio se anota en public.market_history (se borra lo de más de 14 días).
+--   · Se ignora todo lo raro (estado distinto de 200, JSON mal formado, precio no válido): se conserva el último precio bueno y
+--     se anota el último error de cada símbolo (market_feed). Los administradores lo ven con market_status().
+--   · Primera ronda: además se pide una vez el historial de 5 días por horas (range=5d&interval=1h) para que los gráficos no
+--     empiecen vacíos.
+--
+-- ¿SE PUEDE OPERAR? («operable»): un activo se opera solo si su precio es FRESCO, y eso se deduce de los datos, sin calendario
+-- (así vale con festivos):
+--   · el recolector funciona: fetched_at (cuándo se recogió) de hace menos de 5 minutos; y
+--   · el mercado está abierto: quoted_at (hora del último trade) a menos de 20 minutos de fetched_at. En fin de semana o fuera
+--     de horario (EE. UU.: lunes a viernes, 9:30-16:00 hora de Nueva York) el último trade es viejo y las acciones quedan
+--     «cerradas»; las criptomonedas no cierran.
+--   place_trade NUNCA ejecuta a un precio no fresco y explica en español cuál es el caso (mercado cerrado o sin precios).
+--   El ranking y las posiciones valoran siempre con la última cotización guardada (con el mercado cerrado vale el último cierre).
+--
+-- Si pg_net o pg_cron no están activados, la instalación NO falla: la bolsa queda instalada pero sin precios («Sin precios en
+-- directo todavía»). Activa las extensiones en Dashboard → Database → Extensions (pg_net y pg_cron) y ejecuta:
+--     select public.market_setup();
+-- (también lo hace el botón «Actualizar ahora» que ven los administradores en la bolsa).
+--
+-- LÍMITE CONOCIDO: la dirección de Yahoo Finance no es una API oficial y gratuita con garantías: puede cambiar de formato, limitar
+-- las peticiones (429) o bloquear las IP de Supabase. Si pasa, no se rompe nada: la bolsa deja de operar, avisa con «Sin
+-- precios en directo todavía» y market_status() (administradores) enseña la última respuesta y el error de cada símbolo.
 --
 -- Contenido:
---   1. public.invest_assets      los 10 activos y los parámetros de su curva de precios (solo lectura).
---   2. Precios                   invest_price (interna), market_price, market_prices, market_history, market_sparks.
---   3. public.invest_accounts    una cuenta por viajero (efectivo). NINGUNA escritura directa.
---   4. public.invest_trades      cada compra y venta de todos. NINGUNA escritura directa.
---   5. Funciones de escritura    join_market, place_trade, reset_market (solo administradores).
---   6. Funciones de lectura      invest_leaderboard, invest_positions, invest_best_worst (todo calculado aquí).
---   7. Tiempo real               invest_trades en supabase_realtime.
+--   1. Migración desde la versión anterior (con activos inventados), si estaba instalada.
+--   2. public.invest_assets, market_quotes, market_history, market_feed, market_requests y market_state.
+--   3. Recolector: market_state_of, market_ingest, market_tick y market_setup (internas), market_status y market_refresh (admin).
+--   4. public.invest_accounts e invest_trades (NINGUNA escritura directa).
+--   5. Lectura para el cliente: market_prices, market_series, market_sparks, invest_leaderboard, invest_positions, invest_best_worst.
+--   6. Escritura: join_market, place_trade y reset_market (solo administradores).
+--   7. Tiempo real (invest_trades) y puesta en marcha (extensiones, trabajo de pg_cron y primera ronda).
 --
--- CÓMO SE CALCULA EL PRECIO (sin servidor de bolsa): es una función DETERMINISTA de la hora, así que todos ven el
--- mismo precio y el navegador no puede falsearlo:
---     precio(t) = base · exp( vol · Σ a_i · sin(2π·t / T_i + φ_i) )          i = 1..4, redondeado a 2 decimales
---   · t = minutos enteros desde 2026-01-01 00:00 UTC (se trunca al minuto: durante un minuto el precio es el mismo
---     para todos y la operación se ejecuta al precio que se estaba viendo, salvo que cambie el minuto).
---   · Cuatro ondas por activo: un temblor de ~20-40 min, otra de unas horas, una de ~1 día y una de 11-19 días
---     (la que mueve la semana). Con los periodos distintos y las fases al azar, cada activo se mueve a su aire.
---   · `vol` es la volatilidad del activo (0,03 = tranquilo, 0,12 = muy movido) y `exp(...)` garantiza precio > 0.
---   · Medido sobre 60 días con las 10 curvas (ventanas de máximo/mínimo): en 10 min el rango típico va de ~0,2 % (los
---     tranquilos) a ~0,35 % (los movidos); en 24 h de ~3 % a ~6,5 % (hasta ~9 % en los peores días); y el cambio
---     en una semana llega a unos ±7 % en los tranquilos y ±25 % en los más volátiles.
---   LÍMITE CONOCIDO: una función determinista se puede calcular de antemano. Este repositorio es público, así que
---   quien lea este archivo puede calcular precios futuros y hacer trampa en un juego entre amigos. Si importara, la
---   solución es meter en la fórmula una semilla secreta (una fila de una tabla sin permisos para los clientes).
+-- OPERACIONES: la posición de un activo es Σ compras − Σ ventas del usuario. place_trade bloquea la fila de la cuenta (`for
+-- update`) mientras opera: dos toques seguidos (o dos dispositivos) se ejecutan uno detrás de otro y no se puede gastar dos
+-- veces el mismo dinero ni vender dos veces la misma posición. Cantidad: > 0, máx. 6 decimales y 1.000.000 de unidades por
+-- operación. Precio: la cotización guardada redondeada a 2 decimales (se guarda con la operación, junto con su hora). Mínimo de
+-- operación: 1 $ (salvo vender lo último que queda de una posición).
 --
--- OPERACIONES: la posición de un activo es Σ compras − Σ ventas del usuario. place_trade bloquea la fila de la cuenta
--- (`for update`) mientras opera, así que dos toques seguidos (o dos dispositivos) se ejecutan uno detrás de otro y no
--- se puede gastar dos veces el mismo dinero ni vender dos veces la misma posición. Cantidad: > 0, máx. 6 decimales
--- y 1.000.000 de unidades por operación. Mínimo de operación: 1 $ (salvo vender lo que queda de una posición).
+-- COSTE MEDIO (invest_positions.avg_cost): media ponderada móvil. Cada compra recalcula la media con lo que ya había; una venta
+-- no la cambia (solo quita unidades); si se vende todo, se reinicia. La ganancia de una posición (pnl) es su valor actual menos
+-- cantidad × coste medio.
 --
--- COSTE MEDIO (invest_positions.avg_cost): media ponderada móvil. Cada compra recalcula la media con lo que ya había;
--- una venta no la cambia (solo quita unidades); si se vende todo, se reinicia. La ganancia de una posición (pnl) es
--- su valor actual menos cantidad × coste medio.
---
--- MEJOR Y PEOR OPERACIÓN (invest_best_worst): ganancia de cada operación frente al precio de hoy: una compra gana
--- (precio hoy − precio pagado) × cantidad; una venta gana (precio vendido − precio hoy) × cantidad (lo que ganó o
--- perdió por vender en vez de esperar).
+-- MEJOR Y PEOR OPERACIÓN (invest_best_worst): ganancia de cada operación frente al precio de hoy: una compra gana (precio hoy −
+-- precio pagado) × cantidad; una venta gana (precio vendido − precio hoy) × cantidad.
 
--- ---------- 1. activos ----------
+-- ---------- 1. migración desde la versión anterior (activos inventados) ----------
+
+-- La versión anterior calculaba los precios con una fórmula y guardaba cuentas y operaciones de prueba. Se sustituye entera:
+-- las cuentas se conservan (mismo nombre, otra vez con 200.000 $) y las operaciones se borran.
+do $mig$
+declare
+  v_accounts int;
+  v_trades int;
+  r record;
+begin
+  if exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'invest_assets' and column_name = 'periods') then
+    select count(*) into v_accounts from public.invest_accounts;
+    select count(*) into v_trades from public.invest_trades;
+    drop table if exists pg_temp.bolsa_cuentas_antiguas;
+    create temp table bolsa_cuentas_antiguas as select user_id, name, created_at from public.invest_accounts;
+    for r in select 'drop function public.' || quote_ident(p.proname) || '(' || pg_get_function_identity_arguments(p.oid) || ')' as f from pg_proc p
+             where p.pronamespace = 'public'::regnamespace
+               and (p.proname like 'invest\_%' or p.proname like 'market\_%' or p.proname in ('join_market', 'place_trade', 'reset_market')) loop
+      execute r.f;
+    end loop;
+    drop table public.invest_trades, public.invest_accounts, public.invest_assets cascade;
+    raise notice 'Bolsa: se sustituye la versión con activos inventados por la de precios reales. Se reinician % operaciones de prueba y % cuentas (las cuentas se conservan y vuelven a tener 200.000 $).', v_trades, v_accounts;
+  end if;
+end
+$mig$;
+
+-- ---------- 2. activos, cotizaciones e historial ----------
 
 create table public.invest_assets (
-  symbol text primary key check (symbol ~ '^[A-Z]{3,5}$'),
+  -- Es el símbolo de Yahoo Finance y se usa tal cual en la dirección de la petición: solo letras, cifras, punto y guion.
+  symbol text primary key check (symbol ~ '^[A-Z0-9][A-Z0-9.-]{0,11}$'),
   name text not null check (char_length(name) between 1 and 40),
   emoji text not null check (char_length(emoji) between 1 and 8),
-  base numeric not null check (base > 0),
-  vol numeric not null check (vol > 0 and vol <= 1),
-  -- Ondas de la curva (ver arriba): periodo en minutos, amplitud relativa y fase en radianes; mismo número de cada una.
-  periods numeric[] not null check (cardinality(periods) between 1 and 8 and 0 < all (periods)),
-  amps numeric[] not null constraint invest_assets_amps_check check (cardinality(amps) = cardinality(periods)),
-  phases numeric[] not null constraint invest_assets_phases_check check (cardinality(phases) = cardinality(periods)),
+  kind text not null check (kind in ('accion', 'cripto')),
   sort smallint not null default 0
 );
 
-insert into public.invest_assets (symbol, name, emoji, base, vol, periods, amps, phases, sort) values
-  ('HELA', 'Helados de Miami',        '🍦',  24.80, 0.038, '{19,131,1330,19800}',  '{0.055,0.150,0.220,1}', '{0.6,2.1,4.0,1.3}', 1),
-  ('FLAM', 'Flamingo Coin',           '🦩',  41.20, 0.105, '{23,157,1510,17600}',  '{0.024,0.078,0.110,1}', '{3.1,0.4,5.2,0.2}', 2),
-  ('CANG', 'Cangrejo Futures',        '🦀',  87.50, 0.085, '{29,203,1260,22400}',  '{0.030,0.095,0.140,1}', '{1.7,3.3,0.9,2.8}', 3),
-  ('SOLF', 'Sol de Florida',          '☀️', 156.00, 0.032, '{17,241,1620,24900}',  '{0.060,0.160,0.230,1}', '{5.0,1.1,2.4,4.4}', 4),
-  ('AIRB', 'Airboat Motors',          '🚤', 238.00, 0.062, '{31,173,1440,27300}',  '{0.036,0.110,0.170,1}', '{2.2,5.6,3.7,0.7}', 5),
-  ('GATR', 'Gator Capital',           '🐊',  64.30, 0.115, '{21,119,1700,15800}',  '{0.022,0.068,0.100,1}', '{4.2,2.7,1.5,3.9}', 6),
-  ('CAFE', 'Cafecito Cubano S.A.',    '☕',  18.90, 0.060, '{37,187,1180,21200}',  '{0.040,0.120,0.190,1}', '{0.3,4.8,2.9,5.5}', 7),
-  ('COHE', 'Cohetes del Cabo',        '🚀', 320.00, 0.120, '{27,139,1380,20100}',  '{0.020,0.072,0.100,1}', '{1.1,3.9,4.6,2.0}', 8),
-  ('RUTA', 'Gasolina Ruta 1',         '⛽',  31.50, 0.040, '{41,223,1550,25800}',  '{0.060,0.160,0.210,1}', '{2.6,0.9,5.9,3.4}', 9),
-  ('MALE', 'Maletas Express',         '🧳',  74.80, 0.072, '{25,167,1290,18900}',  '{0.032,0.100,0.160,1}', '{3.8,1.9,0.6,1.1}', 10);
+insert into public.invest_assets (symbol, name, emoji, kind, sort) values
+  ('DIS',     'Disney',            '🏰', 'accion',  1),
+  ('CCL',     'Carnival (cruceros)', '🚢', 'accion',  2),
+  ('RCL',     'Royal Caribbean',   '⚓', 'accion',  3),
+  ('MAR',     'Marriott (hoteles)', '🏨', 'accion',  4),
+  ('DAL',     'Delta Air Lines',   '✈️', 'accion',  5),
+  ('AAPL',    'Apple',             '🍎', 'accion',  6),
+  ('TSLA',    'Tesla',             '🚗', 'accion',  7),
+  ('NVDA',    'Nvidia',            '🎮', 'accion',  8),
+  ('AMZN',    'Amazon',            '📦', 'accion',  9),
+  ('MSFT',    'Microsoft',         '🪟', 'accion', 10),
+  ('BTC-USD', 'Bitcoin',           '🪙', 'cripto', 11),
+  ('ETH-USD', 'Ethereum',          '💎', 'cripto', 12);
 
--- Supabase concede por defecto todos los permisos sobre las tablas nuevas: se quitan y solo se da lectura.
-revoke all on public.invest_assets from anon, authenticated;
-grant select on public.invest_assets to authenticated;
+-- Última cotización buena de cada activo. La escribe SOLO market_ingest (el recolector).
+create table public.market_quotes (
+  symbol text primary key references public.invest_assets (symbol),
+  price numeric(14, 2) not null check (price > 0),
+  prev_close numeric(14, 2) check (prev_close > 0),   -- cierre anterior (para la variación del día)
+  quoted_at timestamptz not null,                      -- hora del último trade según Yahoo
+  fetched_at timestamptz not null                      -- cuándo respondió Yahoo (se recogió)
+);
+
+-- Un punto cada vez que el precio cambia (y las horas de la carga inicial); se borra lo de más de 14 días.
+create table public.market_history (
+  symbol text not null references public.invest_assets (symbol),
+  t timestamptz not null,
+  price numeric(14, 2) not null check (price > 0),
+  primary key (symbol, t)
+);
+create index market_history_t_idx on public.market_history (t);
+
+-- Diagnóstico por símbolo (lo lee market_status, solo administradores).
+create table public.market_feed (
+  symbol text primary key references public.invest_assets (symbol),
+  last_request_at timestamptz,
+  last_ok_at timestamptz,
+  last_status int,
+  last_error text,
+  last_error_at timestamptz,
+  ok_count int not null default 0,
+  error_count int not null default 0,
+  backfilled_at timestamptz,
+  backfill_tried_at timestamptz,
+  backfill_error text
+);
+insert into public.market_feed (symbol) select symbol from public.invest_assets;
+
+-- Peticiones lanzadas y todavía sin recoger: qué id de pg_net corresponde a qué símbolo.
+create table public.market_requests (
+  request_id bigint primary key,
+  symbol text not null references public.invest_assets (symbol),
+  kind text not null check (kind in ('quote', 'backfill')),
+  requested_at timestamptz not null default now()
+);
+
+-- Una sola fila: cuándo corrió el recolector por última vez.
+create table public.market_state (
+  id boolean primary key default true check (id),
+  last_tick_at timestamptz,
+  last_tick_note text,
+  last_prune_at timestamptz
+);
+insert into public.market_state default values;
+
+-- Supabase concede por defecto todos los permisos sobre las tablas nuevas: se quitan. Los clientes leen (con RLS: solo los
+-- viajeros) activos, cotizaciones e historial; el recolector y su diagnóstico no son accesibles para ellos (sin políticas).
+revoke all on public.invest_assets, public.market_quotes, public.market_history, public.market_feed, public.market_requests, public.market_state from anon, authenticated;
+grant select on public.invest_assets, public.market_quotes, public.market_history to authenticated;
 alter table public.invest_assets enable row level security;
-create policy invest_assets_select on public.invest_assets
-  for select to authenticated using (public.is_member());
+alter table public.market_quotes enable row level security;
+alter table public.market_history enable row level security;
+alter table public.market_feed enable row level security;
+alter table public.market_requests enable row level security;
+alter table public.market_state enable row level security;
+create policy invest_assets_select on public.invest_assets for select to authenticated using (public.is_member());
+create policy market_quotes_select on public.market_quotes for select to authenticated using (public.is_member());
+create policy market_history_select on public.market_history for select to authenticated using (public.is_member());
 
--- ---------- ayudas internas (los clientes no las ejecutan; las usan las funciones de abajo) ----------
-
--- La curva de precios: pura y determinista (misma hora ⇒ mismo precio). Ver la explicación de arriba.
-create or replace function public.invest_price(p_base numeric, p_vol numeric, p_periods numeric[], p_amps numeric[], p_phases numeric[], p_at timestamptz)
-returns numeric
-language sql immutable set search_path = public, pg_temp
-as $$
-  select greatest(0.01, round((
-    p_base::float8 * exp(p_vol::float8 * coalesce((
-      select sum(p_amps[i]::float8 * sin(2 * pi() * floor((extract(epoch from p_at) - 1767225600) / 60)::float8 / p_periods[i]::float8 + p_phases[i]::float8))
-      from generate_subscripts(p_periods, 1) as i
-    ), 0))
-  )::numeric, 2));
-$$;
-revoke all on function public.invest_price(numeric, numeric, numeric[], numeric[], numeric[], timestamptz) from public, anon, authenticated;
+-- ---------- ayudas internas (los clientes no las ejecutan) ----------
 
 -- Dinero con formato español para los mensajes de error (10.000,50): no depende del idioma del servidor.
 create or replace function public.invest_fmt(p_value numeric, p_decimals int default 2)
@@ -1542,112 +1626,375 @@ as $$
 $$;
 revoke all on function public.invest_clean_name(text) from public, anon, authenticated;
 
--- ---------- 2. precios: lo que ve el cliente ----------
+-- ¿Cómo está un precio? 'none' (nunca llegó), 'stale' (el recolector no ha traído nada en 5 min: sin precios en directo),
+-- 'closed' (llega, pero el último trade es de hace más de 20 min: mercado cerrado) o 'live' (operable).
+create or replace function public.market_state_of(p_fetched timestamptz, p_quoted timestamptz, p_now timestamptz default clock_timestamp())
+returns text
+language sql stable set search_path = public, pg_temp
+as $$
+  select case
+    when p_fetched is null or p_quoted is null then 'none'
+    when p_fetched < p_now - interval '5 minutes' then 'stale'
+    when p_quoted < p_fetched - interval '20 minutes' then 'closed'
+    else 'live'
+  end;
+$$;
+revoke all on function public.market_state_of(timestamptz, timestamptz, timestamptz) from public, anon, authenticated;
 
--- Precio de un activo a una hora (por defecto, ahora). Solo viajeros.
-create or replace function public.market_price(p_symbol text, p_at timestamptz default now())
-returns numeric
-language plpgsql stable security definer set search_path = public, pg_temp
+-- ---------- 3. recolector ----------
+
+-- Valida UNA respuesta de Yahoo y guarda la cotización (o el error). Nunca falla: un error se anota y se conserva el último
+-- precio bueno. p_kind 'quote' = precio actual (interval=1d&range=1d); 'backfill' = historial de 5 días por horas.
+create or replace function public.market_ingest(p_symbol text, p_kind text, p_status int, p_content text, p_error text, p_timed_out boolean, p_created timestamptz)
+returns boolean
+language plpgsql security definer set search_path = public, pg_temp
 as $$
 declare
-  a public.invest_assets;
+  v_msg text;
+  v_j jsonb;
+  v_meta jsonb;
+  v_price numeric;
+  v_prev numeric;
+  v_time numeric;
+  v_quoted timestamptz;
+  v_when timestamptz := coalesce(p_created, clock_timestamp());
+  v_old public.market_quotes;
+  v_rows int;
 begin
-  if not public.is_member() then
-    raise exception 'No autorizado' using errcode = '42501';
+  if coalesce(p_timed_out, false) then
+    v_msg := 'Yahoo no respondió a tiempo';
+  elsif p_error is not null then
+    v_msg := 'Error de red: ' || left(p_error, 160);
+  elsif p_status is null then
+    v_msg := 'Respuesta sin código HTTP';
+  elsif p_status = 404 then
+    v_msg := 'Yahoo no conoce este símbolo (404)';
+  elsif p_status = 429 then
+    v_msg := 'Yahoo limita las peticiones (429)';
+  elsif p_status <> 200 then
+    v_msg := 'Yahoo respondió con el error HTTP ' || p_status;
+  else
+    begin
+      v_j := p_content::jsonb;
+    exception when others then
+      v_msg := 'La respuesta de Yahoo no es un JSON válido';
+    end;
   end if;
-  select * into a from public.invest_assets where symbol = upper(btrim(coalesce(p_symbol, '')));
-  if not found then
-    raise exception 'Ese activo no existe en la bolsa';
+
+  if v_msg is null then
+    v_meta := v_j #> '{chart,result,0,meta}';
+    if jsonb_typeof(v_meta) is distinct from 'object' then
+      v_msg := 'La respuesta de Yahoo no trae datos del activo';
+    elsif upper(coalesce(v_meta ->> 'symbol', p_symbol)) <> upper(p_symbol) then
+      v_msg := 'La respuesta es de otro símbolo (' || left(v_meta ->> 'symbol', 20) || ')';
+    elsif coalesce(upper(v_meta ->> 'currency'), 'USD') <> 'USD' then
+      v_msg := 'La moneda no es USD (' || left(v_meta ->> 'currency', 10) || ')';
+    end if;
   end if;
-  return public.invest_price(a.base, a.vol, a.periods, a.amps, a.phases, p_at);
+
+  if v_msg is null and p_kind = 'backfill' then
+    begin
+      insert into public.market_history (symbol, t, price)
+        select p_symbol, to_timestamp(ts.v::numeric) + interval '1 hour', round(c.v::numeric, 2)
+        from jsonb_array_elements_text(v_j #> '{chart,result,0,timestamp}') with ordinality as ts(v, i)
+        join jsonb_array_elements_text(v_j #> '{chart,result,0,indicators,quote,0,close}') with ordinality as c(v, i) on c.i = ts.i
+        where c.v is not null and c.v::numeric >= 0.01 and c.v::numeric < 1000000000
+          and to_timestamp(ts.v::numeric) + interval '1 hour' <= v_when
+        on conflict (symbol, t) do nothing;
+      get diagnostics v_rows = row_count;
+      update public.market_feed set backfilled_at = v_when, backfill_error = null where symbol = p_symbol;
+      return true;
+    exception when others then
+      v_msg := 'Historial inicial no válido: ' || left(sqlerrm, 120);
+    end;
+  end if;
+
+  if v_msg is null and p_kind = 'quote' then
+    begin
+      if jsonb_typeof(v_meta -> 'regularMarketPrice') is distinct from 'number' then
+        v_msg := 'La respuesta no trae precio';
+      else
+        v_price := (v_meta ->> 'regularMarketPrice')::numeric;
+        if v_price < 0.005 or v_price >= 1000000000 then
+          v_msg := 'Precio no válido (' || left(v_price::text, 24) || ')';
+        end if;
+      end if;
+      if v_msg is null then
+        if jsonb_typeof(v_meta -> 'chartPreviousClose') = 'number' and (v_meta ->> 'chartPreviousClose')::numeric >= 0.005 and (v_meta ->> 'chartPreviousClose')::numeric < 1000000000 then
+          v_prev := (v_meta ->> 'chartPreviousClose')::numeric;
+        end if;
+        if jsonb_typeof(v_meta -> 'regularMarketTime') is distinct from 'number' then
+          v_msg := 'La respuesta no trae la hora de la cotización';
+        else
+          v_time := (v_meta ->> 'regularMarketTime')::numeric;
+          if v_time <= 0 or v_time > 4102444800 then
+            v_msg := 'Hora de cotización no válida';
+          else
+            v_quoted := least(to_timestamp(v_time), v_when); -- una cotización no puede ser del futuro
+          end if;
+        end if;
+      end if;
+    exception when others then
+      v_msg := 'Respuesta no válida: ' || left(sqlerrm, 120);
+    end;
+  end if;
+
+  if v_msg is null and p_kind = 'quote' then
+    select * into v_old from public.market_quotes where symbol = p_symbol;
+    if not found then
+      insert into public.market_quotes (symbol, price, prev_close, quoted_at, fetched_at)
+        values (p_symbol, round(v_price, 2), round(v_prev, 2), v_quoted, v_when);
+    elsif v_quoted >= v_old.quoted_at then
+      update public.market_quotes
+        set price = round(v_price, 2), prev_close = round(v_prev, 2), quoted_at = v_quoted, fetched_at = greatest(v_when, v_old.fetched_at)
+        where symbol = p_symbol;
+    else
+      -- Yahoo devolvió algo más viejo que lo que ya hay: no se retrocede (el precio y su hora siguen siendo los buenos).
+      update public.market_quotes set fetched_at = greatest(v_when, v_old.fetched_at) where symbol = p_symbol;
+    end if;
+    if v_old.symbol is null or v_quoted >= v_old.quoted_at then
+      if v_old.symbol is null or v_old.price is distinct from round(v_price, 2) then
+        insert into public.market_history (symbol, t, price) values (p_symbol, v_when, round(v_price, 2))
+          on conflict (symbol, t) do update set price = excluded.price;
+      end if;
+    end if;
+    update public.market_feed
+      set last_ok_at = v_when, last_status = 200, ok_count = ok_count + 1
+      where symbol = p_symbol;
+    return true;
+  end if;
+
+  -- Algo falló: se anota y no se toca la última cotización buena.
+  if p_kind = 'backfill' then
+    update public.market_feed set backfill_error = v_msg where symbol = p_symbol;
+  else
+    update public.market_feed
+      set last_status = p_status, last_error = v_msg, last_error_at = v_when, error_count = error_count + 1
+      where symbol = p_symbol;
+  end if;
+  return false;
 end;
 $$;
-revoke all on function public.market_price(text, timestamptz) from public, anon;
-grant execute on function public.market_price(text, timestamptz) to authenticated;
+revoke all on function public.market_ingest(text, text, int, text, text, boolean, timestamptz) from public, anon, authenticated;
 
--- Todos los activos con su precio de ahora y el cambio respecto a hace 24 horas (en %).
-create or replace function public.market_prices()
-returns table (symbol text, name text, emoji text, price numeric, change_24h_pct numeric)
-language plpgsql stable security definer set search_path = public, pg_temp
+-- Una ronda del recolector (la ejecuta pg_cron cada minuto): recoge lo que ha llegado y lanza las peticiones nuevas.
+-- Nadie con sesión puede ejecutarla directamente (solo el dueño: pg_cron y las funciones de abajo).
+create or replace function public.market_tick()
+returns jsonb
+language plpgsql security definer set search_path = public, pg_temp
 as $$
-#variable_conflict use_column
 declare
   v_now timestamptz := clock_timestamp();
+  v_ua constant text := 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Safari/605.1.15';
+  v_url constant text := 'https://query1.finance.yahoo.com/v8/finance/chart/';
+  v_headers jsonb;
+  r record;
+  v_id bigint;
+  v_ok int := 0;
+  v_err int := 0;
+  v_lost int := 0;
+  v_launched int := 0;
 begin
-  if not public.is_member() then
-    raise exception 'No autorizado' using errcode = '42501';
+  -- Si dos rondas coinciden (cron y el botón del administrador), la segunda se salta.
+  if not pg_try_advisory_xact_lock(hashtext('market_tick')) then
+    return jsonb_build_object('skipped', true);
   end if;
-  return query
-    select a.symbol, a.name, a.emoji, p.now_price,
-           round((p.now_price / p.old_price - 1) * 100, 2)
-    from public.invest_assets a
-    cross join lateral (select public.invest_price(a.base, a.vol, a.periods, a.amps, a.phases, v_now) as now_price,
-                               public.invest_price(a.base, a.vol, a.periods, a.amps, a.phases, v_now - interval '24 hours') as old_price) p
-    order by a.sort, a.symbol;
+  if to_regclass('net._http_response') is null or to_regprocedure('net.http_get(text,jsonb,jsonb,integer)') is null then
+    update public.market_state set last_tick_at = v_now, last_tick_note = 'Falta la extensión pg_net: actívala en Dashboard → Database → Extensions';
+    return jsonb_build_object('error', 'Falta la extensión pg_net');
+  end if;
+  v_headers := jsonb_build_object('User-Agent', v_ua, 'Accept', 'application/json');
+
+  -- 1) recoger las respuestas ya terminadas (de la más antigua a la más nueva, para no retroceder)
+  for r in
+    select q.request_id, q.symbol, q.kind, q.requested_at,
+           h.id is not null as answered, h.status_code, h.content, h.error_msg, h.timed_out, h.created
+    from public.market_requests q
+    left join net._http_response h on h.id = q.request_id
+    order by q.requested_at, q.request_id
+  loop
+    if r.answered then
+      begin
+        if public.market_ingest(r.symbol, r.kind, r.status_code, r.content, r.error_msg, r.timed_out, r.created) then
+          v_ok := v_ok + 1;
+        else
+          v_err := v_err + 1;
+        end if;
+      exception when others then
+        v_err := v_err + 1;
+        update public.market_feed set last_error = 'Error interno: ' || left(sqlerrm, 120), last_error_at = v_now, error_count = error_count + 1 where symbol = r.symbol;
+      end;
+      delete from public.market_requests where request_id = r.request_id;
+    elsif r.requested_at < v_now - interval '5 minutes' then
+      -- Sin respuesta en 5 minutos: se da por perdida (si llegara después, se ignora) y se podrá pedir otra.
+      v_lost := v_lost + 1;
+      if r.kind = 'quote' then
+        update public.market_feed set last_error = 'Sin respuesta de Yahoo en 5 minutos', last_error_at = v_now, error_count = error_count + 1 where symbol = r.symbol;
+      else
+        update public.market_feed set backfill_error = 'Sin respuesta de Yahoo en 5 minutos' where symbol = r.symbol;
+      end if;
+      delete from public.market_requests where request_id = r.request_id;
+    end if;
+  end loop;
+
+  -- 2) lanzar las nuevas (una de precio por símbolo, y una sola vez la carga inicial del historial)
+  for r in
+    select a.symbol, f.backfilled_at, f.backfill_tried_at,
+           exists (select 1 from public.market_requests q where q.symbol = a.symbol and q.kind = 'quote') as quote_pending,
+           exists (select 1 from public.market_requests q where q.symbol = a.symbol and q.kind = 'backfill') as backfill_pending
+    from public.invest_assets a join public.market_feed f on f.symbol = a.symbol
+    order by a.sort
+  loop
+    begin
+      if not r.quote_pending then
+        v_id := net.http_get(url := v_url || r.symbol || '?interval=1d&range=1d', headers := v_headers, timeout_milliseconds := 10000);
+        insert into public.market_requests (request_id, symbol, kind, requested_at) values (v_id, r.symbol, 'quote', v_now);
+        update public.market_feed set last_request_at = v_now where symbol = r.symbol;
+        v_launched := v_launched + 1;
+      end if;
+      if r.backfilled_at is null and not r.backfill_pending and (r.backfill_tried_at is null or r.backfill_tried_at < v_now - interval '30 minutes') then
+        v_id := net.http_get(url := v_url || r.symbol || '?interval=1h&range=5d', headers := v_headers, timeout_milliseconds := 15000);
+        insert into public.market_requests (request_id, symbol, kind, requested_at) values (v_id, r.symbol, 'backfill', v_now);
+        update public.market_feed set backfill_tried_at = v_now where symbol = r.symbol;
+        v_launched := v_launched + 1;
+      end if;
+    exception when others then
+      update public.market_feed set last_error = 'No se pudo lanzar la petición: ' || left(sqlerrm, 120), last_error_at = v_now, error_count = error_count + 1 where symbol = r.symbol;
+    end;
+  end loop;
+
+  -- 3) limpieza: el historial guarda 14 días (se revisa como mucho una vez por hora)
+  if (select last_prune_at from public.market_state) is null or (select last_prune_at from public.market_state) < v_now - interval '1 hour' then
+    delete from public.market_history where t < v_now - interval '14 days';
+    delete from public.market_requests where requested_at < v_now - interval '1 day';
+    update public.market_state set last_prune_at = v_now;
+  end if;
+
+  update public.market_state set last_tick_at = v_now, last_tick_note = format('%s respuestas buenas, %s con error, %s perdidas, %s peticiones nuevas', v_ok, v_err, v_lost, v_launched);
+  return jsonb_build_object('ok', v_ok, 'errors', v_err, 'lost', v_lost, 'launched', v_launched);
 end;
 $$;
-revoke all on function public.market_prices() from public, anon;
-grant execute on function public.market_prices() to authenticated;
+revoke all on function public.market_tick() from public, anon, authenticated;
 
--- Serie de precios de un activo para dibujar el gráfico: p_points puntos repartidos entre hace p_hours horas y ahora
--- (límites: 1-720 horas y 2-500 puntos). Ordenada por hora.
-create or replace function public.market_history(p_symbol text, p_hours int default 48, p_points int default 96)
-returns table (t timestamptz, price numeric)
+-- Pone en marcha (o repara) el recolector: activa pg_net y pg_cron si hace falta (y se puede), programa el trabajo de pg_cron
+-- (con nombre fijo: si ya existe se reemplaza, nunca se duplica) y lanza una ronda. Devuelve qué hay y qué falta.
+-- Solo el dueño la ejecuta (SQL Editor: `select public.market_setup();`) o un administrador con market_refresh().
+create or replace function public.market_setup()
+returns jsonb
+language plpgsql security definer set search_path = public, pg_temp
+as $$
+declare
+  v_notes text[] := '{}';
+  v_net boolean;
+  v_cron boolean;
+  v_scheduled boolean := false;
+  v_tick jsonb;
+begin
+  if to_regclass('net._http_response') is null then
+    begin
+      execute 'create extension if not exists pg_net with schema extensions';
+    exception when others then
+      v_notes := v_notes || ('No se pudo activar pg_net (' || sqlerrm || '). Actívala en Dashboard → Database → Extensions.');
+    end;
+  end if;
+  if to_regprocedure('cron.schedule(text,text,text)') is null then
+    begin
+      execute 'create extension if not exists pg_cron with schema pg_catalog';
+    exception when others then
+      v_notes := v_notes || ('No se pudo activar pg_cron (' || sqlerrm || '). Actívala en Dashboard → Database → Extensions.');
+    end;
+  end if;
+  v_net := to_regclass('net._http_response') is not null and to_regprocedure('net.http_get(text,jsonb,jsonb,integer)') is not null;
+  v_cron := to_regprocedure('cron.schedule(text,text,text)') is not null;
+  if v_cron then
+    begin
+      execute $q$select cron.schedule('market_tick', '* * * * *', 'select public.market_tick()')$q$;
+      v_scheduled := true;
+    exception when others then
+      v_notes := v_notes || ('No se pudo programar el trabajo de pg_cron: ' || sqlerrm);
+    end;
+  end if;
+  if v_net then
+    v_tick := public.market_tick();
+  end if;
+  return jsonb_build_object('pg_net', v_net, 'pg_cron', v_cron, 'scheduled', v_scheduled, 'tick', v_tick, 'notes', to_jsonb(v_notes));
+end;
+$$;
+revoke all on function public.market_setup() from public, anon, authenticated;
+
+-- Administradores: «Actualizar ahora». Repara lo que falte (extensiones y trabajo programado) y fuerza una ronda. Como pg_net
+-- trabaja en segundo plano, las respuestas se recogen en la siguiente ronda (o llamando otra vez a los pocos segundos).
+create or replace function public.market_refresh()
+returns jsonb
+language plpgsql security definer set search_path = public, pg_temp
+as $$
+begin
+  if not public.is_admin() then
+    raise exception 'No autorizado' using errcode = '42501';
+  end if;
+  return public.market_setup();
+end;
+$$;
+revoke all on function public.market_refresh() from public, anon;
+grant execute on function public.market_refresh() to authenticated;
+
+-- Administradores: cómo está el recolector (extensiones, trabajo programado, última ronda, cada activo y las últimas
+-- respuestas de Yahoo). Sirve para ver por qué no llegan precios.
+create or replace function public.market_status()
+returns jsonb
 language plpgsql stable security definer set search_path = public, pg_temp
 as $$
-#variable_conflict use_column
 declare
-  a public.invest_assets;
-  v_last timestamptz := date_trunc('minute', clock_timestamp());
+  v_now timestamptz := clock_timestamp();
+  v_net boolean := to_regclass('net._http_response') is not null;
+  v_cron boolean := to_regclass('cron.job') is not null;
+  v_job jsonb;
+  v_resp jsonb := '[]'::jsonb;
 begin
-  if not public.is_member() then
+  if not public.is_admin() then
     raise exception 'No autorizado' using errcode = '42501';
   end if;
-  if p_hours is null or p_hours not between 1 and 720 or p_points is null or p_points not between 2 and 500 then
-    raise exception 'El historial admite de 1 a 720 horas y de 2 a 500 puntos';
+  if v_cron then
+    begin
+      select jsonb_build_object('schedule', j.schedule, 'active', j.active,
+               'last_runs', coalesce((select jsonb_agg(jsonb_build_object('status', d.status, 'message', left(d.return_message, 160), 'start', d.start_time) order by d.start_time desc)
+                                      from (select * from cron.job_run_details x where x.jobid = j.jobid order by x.start_time desc limit 3) d), '[]'::jsonb))
+        into v_job from cron.job j where j.jobname = 'market_tick';
+    exception when others then
+      select jsonb_build_object('schedule', j.schedule, 'active', j.active) into v_job from cron.job j where j.jobname = 'market_tick';
+    end;
   end if;
-  select * into a from public.invest_assets where symbol = upper(btrim(coalesce(p_symbol, '')));
-  if not found then
-    raise exception 'Ese activo no existe en la bolsa';
+  if v_net then
+    select coalesce(jsonb_agg(jsonb_build_object('id', x.id, 'status', x.status_code, 'timed_out', x.timed_out, 'error', x.error_msg, 'created', x.created, 'body', left(x.content, 160)) order by x.created desc), '[]'::jsonb)
+      into v_resp from (select * from net._http_response order by created desc limit 8) x;
   end if;
-  return query
-    select s.ts, public.invest_price(a.base, a.vol, a.periods, a.amps, a.phases, s.ts)
-    from (select v_last - (p_hours * 3600.0 * (p_points - 1 - i) / (p_points - 1)) * interval '1 second' as ts
-          from generate_series(0, p_points - 1) as i) s
-    order by s.ts;
+  return jsonb_build_object(
+    'now', v_now,
+    'pg_net', v_net,
+    'pg_cron', v_cron,
+    'job', v_job,
+    'last_tick_at', (select s.last_tick_at from public.market_state s),
+    'last_tick_note', (select s.last_tick_note from public.market_state s),
+    'pending_requests', (select count(*) from public.market_requests),
+    'assets', (
+      select jsonb_agg(jsonb_build_object(
+        'symbol', a.symbol, 'kind', a.kind,
+        'state', public.market_state_of(q.fetched_at, q.quoted_at, v_now),
+        'price', q.price, 'quoted_at', q.quoted_at, 'fetched_at', q.fetched_at,
+        'last_ok_at', f.last_ok_at, 'last_status', f.last_status, 'last_error', f.last_error, 'last_error_at', f.last_error_at,
+        'ok_count', f.ok_count, 'error_count', f.error_count,
+        'history_points', (select count(*) from public.market_history h where h.symbol = a.symbol),
+        'backfilled_at', f.backfilled_at, 'backfill_error', f.backfill_error) order by a.sort)
+      from public.invest_assets a
+      left join public.market_quotes q on q.symbol = a.symbol
+      left join public.market_feed f on f.symbol = a.symbol),
+    'recent_responses', v_resp);
 end;
 $$;
-revoke all on function public.market_history(text, int, int) from public, anon;
-grant execute on function public.market_history(text, int, int) to authenticated;
+revoke all on function public.market_status() from public, anon;
+grant execute on function public.market_status() to authenticated;
 
--- Los mini gráficos de todos los activos de una sola vez (una consulta en vez de diez).
--- Límites: 1-168 horas y 2-60 puntos por activo.
-create or replace function public.market_sparks(p_hours int default 24, p_points int default 24)
-returns table (symbol text, t timestamptz, price numeric)
-language plpgsql stable security definer set search_path = public, pg_temp
-as $$
-#variable_conflict use_column
-declare
-  v_last timestamptz := date_trunc('minute', clock_timestamp());
-begin
-  if not public.is_member() then
-    raise exception 'No autorizado' using errcode = '42501';
-  end if;
-  if p_hours is null or p_hours not between 1 and 168 or p_points is null or p_points not between 2 and 60 then
-    raise exception 'Los mini gráficos admiten de 1 a 168 horas y de 2 a 60 puntos';
-  end if;
-  return query
-    select a.symbol, s.ts, public.invest_price(a.base, a.vol, a.periods, a.amps, a.phases, s.ts)
-    from public.invest_assets a
-    cross join lateral (select v_last - (p_hours * 3600.0 * (p_points - 1 - i) / (p_points - 1)) * interval '1 second' as ts
-                        from generate_series(0, p_points - 1) as i) s
-    order by a.sort, a.symbol, s.ts;
-end;
-$$;
-revoke all on function public.market_sparks(int, int) from public, anon;
-grant execute on function public.market_sparks(int, int) to authenticated;
-
--- ---------- 3. cuentas ----------
+-- ---------- 4. cuentas y operaciones ----------
 
 create table public.invest_accounts (
   user_id uuid primary key default auth.uid() references auth.users (id) on delete cascade,
@@ -1657,8 +2004,6 @@ create table public.invest_accounts (
   created_at timestamptz not null default now()
 );
 
--- ---------- 4. operaciones ----------
-
 create table public.invest_trades (
   id bigint generated always as identity primary key, -- el orden de las operaciones de cada jugador (coste medio)
   user_id uuid not null references auth.users (id) on delete cascade,
@@ -1666,8 +2011,9 @@ create table public.invest_trades (
   symbol text not null references public.invest_assets (symbol),
   side text not null check (side in ('buy', 'sell')),
   qty numeric(18, 6) not null check (qty > 0 and qty <= 1000000),
-  price numeric(14, 2) not null check (price > 0),
+  price numeric(14, 2) not null check (price > 0),     -- la cotización de Yahoo a la que se ejecutó
   total numeric(14, 2) not null check (total >= 0),
+  quoted_at timestamptz not null,                      -- hora de esa cotización (último trade en Yahoo)
   created_at timestamptz not null default clock_timestamp()
 );
 create index invest_trades_user_idx on public.invest_trades (user_id, symbol, id);
@@ -1684,132 +2030,96 @@ create policy invest_accounts_select on public.invest_accounts
 create policy invest_trades_select on public.invest_trades
   for select to authenticated using (public.is_member());
 
--- ---------- 5. escritura: solo por estas funciones ----------
+-- ---------- 5. lectura para el cliente ----------
 
--- Entrar a la bolsa: crea la cuenta de quien llama con 200.000 $ si no la tenía (si ya la tenía, no cambia nada) y la
--- devuelve. El nombre se normaliza (≤ 40 caracteres); si llega vacío se usa «Viajero».
-create or replace function public.join_market(p_name text default null)
-returns public.invest_accounts
-language plpgsql security definer set search_path = public, pg_temp
+-- Todos los activos con su última cotización, la variación del día respecto al cierre anterior, cómo está el precio y si se
+-- puede operar. Sin cotización todavía: precio nulo y estado 'none'. server_now permite al cliente calcular «hace 40 s» sin
+-- depender de su reloj.
+create or replace function public.market_prices()
+returns table (symbol text, name text, emoji text, kind text, price numeric, prev_close numeric, change_day_pct numeric, quoted_at timestamptz, fetched_at timestamptz, state text, operable boolean, server_now timestamptz)
+language plpgsql stable security definer set search_path = public, pg_temp
 as $$
+#variable_conflict use_column
 declare
-  v_uid uuid := auth.uid();
-  v_acc public.invest_accounts;
+  v_now timestamptz := clock_timestamp();
 begin
-  if v_uid is null or not public.is_member() then
+  if not public.is_member() then
     raise exception 'No autorizado' using errcode = '42501';
   end if;
-  insert into public.invest_accounts (user_id, name) values (v_uid, public.invest_clean_name(p_name))
-    on conflict (user_id) do nothing;
-  select * into v_acc from public.invest_accounts where user_id = v_uid;
-  return v_acc;
+  return query
+    select a.symbol, a.name, a.emoji, a.kind, q.price, q.prev_close,
+           case when q.prev_close > 0 then round((q.price / q.prev_close - 1) * 100, 2) end,
+           q.quoted_at, q.fetched_at, s.st, s.st = 'live', v_now
+    from public.invest_assets a
+    left join public.market_quotes q on q.symbol = a.symbol
+    cross join lateral (select public.market_state_of(q.fetched_at, q.quoted_at, v_now) as st) s
+    order by a.sort, a.symbol;
 end;
 $$;
-revoke all on function public.join_market(text) from public, anon;
-grant execute on function public.join_market(text) to authenticated;
+revoke all on function public.market_prices() from public, anon;
+grant execute on function public.market_prices() to authenticated;
 
--- Comprar o vender. Siempre al precio oficial de ESTE momento (el servidor lo calcula; el cliente no lo envía) y
--- siempre como quien llama (auth.uid()). Devuelve la operación guardada. Los fallos explican en español qué pasó.
-create or replace function public.place_trade(p_symbol text, p_side text, p_qty numeric)
-returns public.invest_trades
-language plpgsql security definer set search_path = public, pg_temp
+-- Serie de precios REAL de un activo para dibujar el gráfico: p_points puntos repartidos entre hace p_hours horas y ahora, cada
+-- uno con el último precio conocido en ese momento (los instantes anteriores al primer dato no salen). Límites: 1-336 horas y
+-- 2-500 puntos. Ordenada por hora.
+create or replace function public.market_series(p_symbol text, p_hours int default 48, p_points int default 96)
+returns table (t timestamptz, price numeric)
+language plpgsql stable security definer set search_path = public, pg_temp
 as $$
+#variable_conflict use_column
 declare
-  v_uid uuid := auth.uid();
-  v_symbol text := upper(btrim(coalesce(p_symbol, '')));
-  v_side text := lower(btrim(coalesce(p_side, '')));
-  v_acc public.invest_accounts;
-  v_held numeric;
-  v_now timestamptz;
-  v_price numeric;
-  v_total numeric;
-  v_trade public.invest_trades;
+  v_sym text := upper(btrim(coalesce(p_symbol, '')));
+  v_last timestamptz := clock_timestamp();
 begin
-  if v_uid is null or not public.is_member() then
+  if not public.is_member() then
     raise exception 'No autorizado' using errcode = '42501';
   end if;
-  if v_side not in ('buy', 'sell') then
-    raise exception 'La operación debe ser una compra o una venta';
+  if p_hours is null or p_hours not between 1 and 336 or p_points is null or p_points not between 2 and 500 then
+    raise exception 'El historial admite de 1 a 336 horas y de 2 a 500 puntos';
   end if;
-  if p_qty is null or p_qty = 'NaN' or p_qty <= 0 then
-    raise exception 'La cantidad debe ser mayor que 0';
-  end if;
-  if p_qty > 1000000 then
-    raise exception 'La cantidad máxima por operación es de 1.000.000 de unidades';
-  end if;
-  if p_qty <> round(p_qty, 6) then
-    raise exception 'La cantidad admite como máximo 6 decimales';
-  end if;
-  if not exists (select 1 from public.invest_assets where symbol = v_symbol) then
+  if not exists (select 1 from public.invest_assets where symbol = v_sym) then
     raise exception 'Ese activo no existe en la bolsa';
   end if;
-
-  -- Se bloquea la cuenta hasta el final de la operación: otra operación del mismo jugador espera aquí y, al
-  -- continuar, ya ve el saldo y las posiciones actualizados.
-  select * into v_acc from public.invest_accounts where user_id = v_uid for update;
-  if not found then
-    raise exception 'Primero entra a la bolsa para recibir tus 200.000 $';
-  end if;
-
-  v_now := clock_timestamp();
-  v_price := public.market_price(v_symbol, v_now);
-  v_total := round(p_qty * v_price, 2);
-
-  select coalesce(sum(case side when 'buy' then qty else -qty end), 0) into v_held
-    from public.invest_trades where user_id = v_uid and symbol = v_symbol;
-
-  -- Mínimo de 1 $ por operación; vender lo último que queda de una posición se permite aunque valga menos.
-  if v_total < 1 and not (v_side = 'sell' and p_qty = v_held) then
-    raise exception 'La operación mínima es de 1 $ (esta sería de % $)', public.invest_fmt(v_total);
-  end if;
-
-  if v_side = 'buy' then
-    if v_acc.cash < v_total then
-      raise exception 'No tienes suficiente dinero: esta compra cuesta % $ y tienes % $', public.invest_fmt(v_total), public.invest_fmt(v_acc.cash);
-    end if;
-    update public.invest_accounts set cash = cash - v_total where user_id = v_uid;
-  else
-    if v_held < p_qty then
-      raise exception 'No tienes suficientes unidades: quieres vender % y tienes %', trim_scale(p_qty), trim_scale(v_held);
-    end if;
-    update public.invest_accounts set cash = cash + v_total where user_id = v_uid;
-  end if;
-
-  insert into public.invest_trades (user_id, name, symbol, side, qty, price, total, created_at)
-    values (v_uid, v_acc.name, v_symbol, v_side, p_qty, v_price, v_total, v_now)
-    returning * into v_trade;
-  return v_trade;
+  return query
+    select s.ts, h.price
+    from (select v_last - (p_hours * 3600.0 * (p_points - 1 - i) / (p_points - 1)) * interval '1 second' as ts
+          from generate_series(0, p_points - 1) as i) s
+    cross join lateral (select x.price from public.market_history x where x.symbol = v_sym and x.t <= s.ts order by x.t desc limit 1) h
+    order by s.ts;
 end;
 $$;
-revoke all on function public.place_trade(text, text, numeric) from public, anon;
-grant execute on function public.place_trade(text, text, numeric) to authenticated;
+revoke all on function public.market_series(text, int, int) from public, anon;
+grant execute on function public.market_series(text, int, int) to authenticated;
 
--- Reiniciar la bolsa: solo administradores. Borra todas las operaciones y deja a todos con 200.000 $ (las cuentas
--- siguen). Devuelve cuántas cuentas se reiniciaron. (`where true`: las extensiones de seguridad de Supabase, como
--- pg_safeupdate, rechazan un UPDATE o DELETE sin WHERE.)
-create or replace function public.reset_market()
-returns integer
-language plpgsql security definer set search_path = public, pg_temp
+-- Los mini gráficos de todos los activos de una sola vez (una consulta en vez de doce). Límites: 1-336 horas y 2-60 puntos.
+create or replace function public.market_sparks(p_hours int default 120, p_points int default 30)
+returns table (symbol text, t timestamptz, price numeric)
+language plpgsql stable security definer set search_path = public, pg_temp
 as $$
+#variable_conflict use_column
 declare
-  v_accounts integer;
+  v_last timestamptz := clock_timestamp();
 begin
-  if not public.is_admin() then
+  if not public.is_member() then
     raise exception 'No autorizado' using errcode = '42501';
   end if;
-  delete from public.invest_trades where true;
-  update public.invest_accounts set cash = 200000 where true;
-  get diagnostics v_accounts = row_count;
-  return v_accounts;
+  if p_hours is null or p_hours not between 1 and 336 or p_points is null or p_points not between 2 and 60 then
+    raise exception 'Los mini gráficos admiten de 1 a 336 horas y de 2 a 60 puntos';
+  end if;
+  return query
+    select a.symbol, s.ts, h.price
+    from public.invest_assets a
+    cross join lateral (select v_last - (p_hours * 3600.0 * (p_points - 1 - i) / (p_points - 1)) * interval '1 second' as ts
+                        from generate_series(0, p_points - 1) as i) s
+    cross join lateral (select x.price from public.market_history x where x.symbol = a.symbol and x.t <= s.ts order by x.t desc limit 1) h
+    order by a.sort, a.symbol, s.ts;
 end;
 $$;
-revoke all on function public.reset_market() from public, anon;
-grant execute on function public.reset_market() to authenticated;
+revoke all on function public.market_sparks(int, int) from public, anon;
+grant execute on function public.market_sparks(int, int) to authenticated;
 
--- ---------- 6. lectura: todo calculado aquí (una sola fuente de verdad) ----------
-
--- Posición de cada jugador en cada activo (solo lo que tiene ahora): cantidad y coste medio (media ponderada móvil;
--- ver arriba). Interna: la usan invest_positions e invest_leaderboard.
+-- Posición de cada jugador en cada activo (solo lo que tiene ahora): cantidad y coste medio (media ponderada móvil; ver
+-- arriba). Interna: la usan invest_positions e invest_leaderboard.
 create or replace function public.invest_holdings()
 returns table (user_id uuid, symbol text, qty numeric, avg_cost numeric)
 language plpgsql stable security definer set search_path = public, pg_temp
@@ -1847,14 +2157,13 @@ end;
 $$;
 revoke all on function public.invest_holdings() from public, anon, authenticated;
 
--- Todas las posiciones de todos: cantidad, coste medio, precio de ahora, valor y ganancia (valor − cantidad × coste medio).
+-- Todas las posiciones de todos: cantidad, coste medio, precio de la última cotización, valor y ganancia (valor − cantidad ×
+-- coste medio). Valora con la última cotización guardada aunque el mercado esté cerrado.
 create or replace function public.invest_positions()
 returns table (user_id uuid, name text, symbol text, qty numeric, avg_cost numeric, price numeric, value numeric, pnl numeric)
 language plpgsql stable security definer set search_path = public, pg_temp
 as $$
 #variable_conflict use_column
-declare
-  v_now timestamptz := clock_timestamp();
 begin
   if not public.is_member() then
     raise exception 'No autorizado' using errcode = '42501';
@@ -1866,15 +2175,16 @@ begin
     from public.invest_holdings() h
     join public.invest_accounts ac on ac.user_id = h.user_id
     join public.invest_assets a on a.symbol = h.symbol
-    cross join lateral (select public.invest_price(a.base, a.vol, a.periods, a.amps, a.phases, v_now) as p) px
+    left join public.market_quotes mq on mq.symbol = h.symbol
+    cross join lateral (select coalesce(mq.price, round(h.avg_cost, 2)) as p) px
     order by ac.name, ac.user_id, a.sort, h.symbol;
 end;
 $$;
 revoke all on function public.invest_positions() from public, anon;
 grant execute on function public.invest_positions() to authenticated;
 
--- Clasificación: por jugador, efectivo + valor de sus posiciones = patrimonio (total), ganancia en % sobre los
--- 200.000 $ iniciales y número de operaciones. Ordenada por patrimonio (y por nombre si empatan).
+-- Clasificación: por jugador, efectivo + valor de sus posiciones = patrimonio (total), ganancia en % sobre los 200.000 $
+-- iniciales y número de operaciones. Ordenada por patrimonio (y por nombre si empatan).
 create or replace function public.invest_leaderboard()
 returns table (user_id uuid, name text, cash numeric, holdings_value numeric, total numeric, pnl_pct numeric, trades_count bigint)
 language plpgsql stable security definer set search_path = public, pg_temp
@@ -1899,15 +2209,13 @@ $$;
 revoke all on function public.invest_leaderboard() from public, anon;
 grant execute on function public.invest_leaderboard() to authenticated;
 
--- La mejor y la peor operación de todos (ver arriba cómo se mide). Dos filas ('best' y 'worst'), o ninguna si
--- nadie ha operado (con una sola operación, las dos son la misma).
+-- La mejor y la peor operación de todos (ver arriba cómo se mide). Dos filas ('best' y 'worst'), o ninguna si nadie ha operado
+-- (con una sola operación, las dos son la misma).
 create or replace function public.invest_best_worst()
 returns table (kind text, id bigint, user_id uuid, name text, symbol text, side text, qty numeric, price numeric, total numeric, created_at timestamptz, price_now numeric, gain numeric, asset_name text)
 language plpgsql stable security definer set search_path = public, pg_temp
 as $$
 #variable_conflict use_column
-declare
-  v_now timestamptz := clock_timestamp();
 begin
   if not public.is_member() then
     raise exception 'No autorizado' using errcode = '42501';
@@ -1918,7 +2226,8 @@ begin
              round(case t.side when 'buy' then px.p - t.price else t.price - px.p end * t.qty, 2) as gain, a.name as asset_name
       from public.invest_trades t
       join public.invest_assets a on a.symbol = t.symbol
-      cross join lateral (select public.invest_price(a.base, a.vol, a.periods, a.amps, a.phases, v_now) as p) px
+      left join public.market_quotes mq on mq.symbol = t.symbol
+      cross join lateral (select coalesce(mq.price, t.price) as p) px
     )
     (select 'best'::text, g.* from g order by g.gain desc, g.id limit 1)
     union all
@@ -1928,10 +2237,180 @@ $$;
 revoke all on function public.invest_best_worst() from public, anon;
 grant execute on function public.invest_best_worst() to authenticated;
 
--- ---------- 7. tiempo real ----------
+-- ---------- 6. escritura: solo por estas funciones ----------
 
--- Las operaciones nuevas llegan a todos sin recargar (Realtime respeta la política de lectura de arriba).
+-- Entrar a la bolsa: crea la cuenta de quien llama con 200.000 $ si no la tenía (si ya la tenía, no cambia nada) y la
+-- devuelve. El nombre se normaliza (≤ 40 caracteres); si llega vacío se usa «Viajero».
+create or replace function public.join_market(p_name text default null)
+returns public.invest_accounts
+language plpgsql security definer set search_path = public, pg_temp
+as $$
+declare
+  v_uid uuid := auth.uid();
+  v_acc public.invest_accounts;
+begin
+  if v_uid is null or not public.is_member() then
+    raise exception 'No autorizado' using errcode = '42501';
+  end if;
+  insert into public.invest_accounts (user_id, name) values (v_uid, public.invest_clean_name(p_name))
+    on conflict (user_id) do nothing;
+  select * into v_acc from public.invest_accounts where user_id = v_uid;
+  return v_acc;
+end;
+$$;
+revoke all on function public.join_market(text) from public, anon;
+grant execute on function public.join_market(text) to authenticated;
+
+-- Comprar o vender. Siempre a la última cotización guardada (el servidor la tiene; el cliente no envía precio) y solo si es FRESCA
+-- (ver arriba), y siempre como quien llama (auth.uid()). Devuelve la operación guardada. Los fallos explican en español qué pasó.
+create or replace function public.place_trade(p_symbol text, p_side text, p_qty numeric)
+returns public.invest_trades
+language plpgsql security definer set search_path = public, pg_temp
+as $$
+declare
+  v_uid uuid := auth.uid();
+  v_symbol text := upper(btrim(coalesce(p_symbol, '')));
+  v_side text := lower(btrim(coalesce(p_side, '')));
+  v_asset public.invest_assets;
+  v_acc public.invest_accounts;
+  v_quote public.market_quotes;
+  v_state text;
+  v_held numeric;
+  v_now timestamptz;
+  v_total numeric;
+  v_trade public.invest_trades;
+begin
+  if v_uid is null or not public.is_member() then
+    raise exception 'No autorizado' using errcode = '42501';
+  end if;
+  if v_side not in ('buy', 'sell') then
+    raise exception 'La operación debe ser una compra o una venta';
+  end if;
+  if p_qty is null or p_qty = 'NaN' or p_qty <= 0 then
+    raise exception 'La cantidad debe ser mayor que 0';
+  end if;
+  if p_qty > 1000000 then
+    raise exception 'La cantidad máxima por operación es de 1.000.000 de unidades';
+  end if;
+  if p_qty <> round(p_qty, 6) then
+    raise exception 'La cantidad admite como máximo 6 decimales';
+  end if;
+  select * into v_asset from public.invest_assets where symbol = v_symbol;
+  if not found then
+    raise exception 'Ese activo no existe en la bolsa';
+  end if;
+
+  -- Se bloquea la cuenta hasta el final de la operación: otra operación del mismo jugador espera aquí y, al
+  -- continuar, ya ve el saldo y las posiciones actualizados.
+  select * into v_acc from public.invest_accounts where user_id = v_uid for update;
+  if not found then
+    raise exception 'Primero entra a la bolsa para recibir tus 200.000 $';
+  end if;
+
+  -- Solo a precio fresco: se lee UNA vez la cotización y de esa misma fila salen el estado, el precio y su hora.
+  v_now := clock_timestamp();
+  select * into v_quote from public.market_quotes where symbol = v_symbol;
+  v_state := public.market_state_of(v_quote.fetched_at, v_quote.quoted_at, v_now);
+  if v_state <> 'live' then
+    if v_state = 'closed' and v_asset.kind = 'accion' then
+      raise exception 'Mercado cerrado: las acciones de EE. UU. se operan de lunes a viernes, de 9:30 a 16:00 (hora de Nueva York). Último precio de % (%): % $. Mientras tanto puedes operar con Bitcoin y Ethereum.',
+        v_asset.name, to_char(v_quote.quoted_at at time zone 'America/New_York', 'DD/MM HH24:MI "NY"'), public.invest_fmt(v_quote.price);
+    end if;
+    raise exception 'No hay precios en directo ahora mismo para %. Inténtalo en unos minutos.', v_asset.name;
+  end if;
+  v_total := round(p_qty * v_quote.price, 2);
+
+  select coalesce(sum(case side when 'buy' then qty else -qty end), 0) into v_held
+    from public.invest_trades where user_id = v_uid and symbol = v_symbol;
+
+  -- Mínimo de 1 $ por operación; vender lo último que queda de una posición se permite aunque valga menos.
+  if v_total < 1 and not (v_side = 'sell' and p_qty = v_held) then
+    raise exception 'La operación mínima es de 1 $ (esta sería de % $)', public.invest_fmt(v_total);
+  end if;
+
+  if v_side = 'buy' then
+    if v_acc.cash < v_total then
+      raise exception 'No tienes suficiente dinero: esta compra cuesta % $ y tienes % $', public.invest_fmt(v_total), public.invest_fmt(v_acc.cash);
+    end if;
+    update public.invest_accounts set cash = cash - v_total where user_id = v_uid;
+  else
+    if v_held < p_qty then
+      raise exception 'No tienes suficientes unidades: quieres vender % y tienes %', trim_scale(p_qty), trim_scale(v_held);
+    end if;
+    update public.invest_accounts set cash = cash + v_total where user_id = v_uid;
+  end if;
+
+  insert into public.invest_trades (user_id, name, symbol, side, qty, price, total, quoted_at, created_at)
+    values (v_uid, v_acc.name, v_symbol, v_side, p_qty, v_quote.price, v_total, v_quote.quoted_at, v_now)
+    returning * into v_trade;
+  return v_trade;
+end;
+$$;
+revoke all on function public.place_trade(text, text, numeric) from public, anon;
+grant execute on function public.place_trade(text, text, numeric) to authenticated;
+
+-- Reiniciar la bolsa: solo administradores. Borra todas las operaciones y deja a todos con 200.000 $ (las cuentas siguen y los
+-- precios no se tocan). Devuelve cuántas cuentas se reiniciaron. (`where true`: las extensiones de seguridad de Supabase, como
+-- pg_safeupdate, rechazan un UPDATE o DELETE sin WHERE.)
+create or replace function public.reset_market()
+returns integer
+language plpgsql security definer set search_path = public, pg_temp
+as $$
+declare
+  v_accounts integer;
+begin
+  if not public.is_admin() then
+    raise exception 'No autorizado' using errcode = '42501';
+  end if;
+  delete from public.invest_trades where true;
+  update public.invest_accounts set cash = 200000 where true;
+  get diagnostics v_accounts = row_count;
+  return v_accounts;
+end;
+$$;
+revoke all on function public.reset_market() from public, anon;
+grant execute on function public.reset_market() to authenticated;
+
+-- ---------- 7. tiempo real y puesta en marcha ----------
+
+-- Las operaciones nuevas llegan a todos sin recargar (Realtime respeta la política de lectura de arriba). Las cotizaciones no
+-- se publican a propósito: son doce filas cada minuto y la pantalla las consulta cada ~20 s.
 alter publication supabase_realtime add table public.invest_trades;
+
+-- Cuentas de la versión anterior (si la había): se recrean con 200.000 $.
+do $mig2$
+declare
+  v_n int;
+begin
+  if to_regclass('pg_temp.bolsa_cuentas_antiguas') is not null then
+    insert into public.invest_accounts (user_id, name, cash, created_at)
+      select user_id, name, 200000, created_at from pg_temp.bolsa_cuentas_antiguas;
+    get diagnostics v_n = row_count;
+    drop table pg_temp.bolsa_cuentas_antiguas;
+    raise notice 'Bolsa: % cuentas conservadas con 200.000 $.', v_n;
+  end if;
+end
+$mig2$;
+
+-- Extensiones, trabajo de pg_cron y primera ronda. Si no se puede, NO falla la instalación: la bolsa queda sin precios hasta
+-- que se activen pg_net y pg_cron (Dashboard → Database → Extensions) y se ejecute `select public.market_setup();`.
+do $arranque$
+declare
+  v_r jsonb;
+begin
+  v_r := public.market_setup();
+  if (v_r ->> 'pg_net')::boolean and (v_r ->> 'pg_cron')::boolean and (v_r ->> 'scheduled')::boolean then
+    raise notice 'Bolsa: precios reales en marcha (pg_cron pide los precios a Yahoo Finance cada minuto; la primera ronda ya está lanzada).';
+  else
+    raise notice 'Bolsa instalada, pero SIN precios en directo todavía: pg_net=%, pg_cron=%, trabajo programado=%. Activa pg_net y pg_cron en Dashboard → Database → Extensions y ejecuta: select public.market_setup();', v_r ->> 'pg_net', v_r ->> 'pg_cron', v_r ->> 'scheduled';
+  end if;
+  if jsonb_array_length(v_r -> 'notes') > 0 then
+    raise notice 'Bolsa: %', v_r -> 'notes';
+  end if;
+exception when others then
+  raise notice 'Bolsa instalada, pero no se pudo poner en marcha el recolector de precios (%). Activa pg_net y pg_cron en Dashboard → Database → Extensions y ejecuta: select public.market_setup();', sqlerrm;
+end
+$arranque$;
 $parte_juego_bolsa$;
   else
     raise notice 'juego_bolsa.sql: ya estaba aplicado, se omite';
@@ -2200,6 +2679,426 @@ alter publication supabase_realtime add table public.bingo_marks;
 $parte_juego_bingo$;
   else
     raise notice 'juego_bingo.sql: ya estaba aplicado, se omite';
+  end if;
+end
+$instalar$;
+
+-- ======================================================================
+-- categorias.sql  (se aplica solo si falta)
+-- ======================================================================
+do $instalar$
+begin
+  if not exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'expenses' and column_name = 'category') then
+    raise notice 'Aplicando categorias.sql...';
+    execute $parte_categorias$
+-- Categoría y ubicación de cada gasto o compra: de qué es (nafta, comida, salidas…) para el resumen «¿En qué gastamos?» de Cuentas,
+-- el álbum y el PDF, y dónde se pagó para que salga en el mapa.
+-- Ejecutar en Supabase → SQL Editor DESPUÉS de extras.sql (añade columnas a public.expenses). Una sola vez.
+-- No depende de compras.sql, adjuntos.sql ni de ningún otro archivo: se puede aplicar antes, después o sin ellos.
+--
+-- Contenido (todo en public.expenses):
+--   · category  una de ocho claves cerradas: nafta, comida, salidas, transporte, alojamiento, compras, salud, otros.
+--               Puede ser nula: los gastos que ya existían se quedan sin categoría (no se tocan) y la web les calcula una por las
+--               palabras del concepto («cena en el puerto» → comida). Solo se guarda lo que elige quien apunta el gasto.
+--   · lat, lng  dónde se pagó (opcional; la web la pone sola al apuntar el gasto, si quien lo apunta lo deja, y se puede quitar o
+--               mover). Mismas reglas que las coordenadas de las fotos y las actividades (rangos y pareja nula a la vez) y, además,
+--               nunca (0, 0): es el «punto nulo» que devuelven los GPS sin señal, no un sitio del viaje.
+-- El reparto (paid_by, split, amount) no cambia; las políticas RLS tampoco.
+--
+-- Privacidad: como las de las fotos, las coordenadas de un gasto las ven todos los viajeros autorizados (nadie más).
+
+alter table public.expenses
+  add column category text
+    constraint expenses_category_check check (category in ('nafta', 'comida', 'salidas', 'transporte', 'alojamiento', 'compras', 'salud', 'otros')),
+  add column lat double precision,
+  add column lng double precision;
+-- (Un CHECK deja pasar el nulo: así los gastos antiguos y los que se apuntan sin categoría o sin ubicación siguen siendo válidos.
+-- Una cadena vacía, una clave con mayúsculas o con espacios y cualquier otra palabra se rechazan. Un valor NaN o infinito en lat o
+-- lng tampoco cabe en los rangos.)
+
+alter table public.expenses
+  add constraint expenses_lat_range check (lat between -90 and 90),
+  add constraint expenses_lng_range check (lng between -180 and 180),
+  add constraint expenses_latlng_pair check ((lat is null) = (lng is null)),
+  add constraint expenses_latlng_not_zero check (not (lat = 0 and lng = 0));
+
+-- Permisos: INSERT y SELECT ya son a nivel de tabla (extras.sql), así que las columnas nuevas se pueden leer y escribir al apuntar un
+-- gasto sin conceder nada más (y anon sigue sin nada: extras.sql le quitó todo). UPDATE se concede por columnas: se añaden solo las
+-- tres nuevas. La política expenses_update no filtra por autor (cualquier viajero edita cualquier gasto), así que se editan igual
+-- que el resto de columnas.
+grant update (category, lat, lng) on public.expenses to authenticated;
+$parte_categorias$;
+  else
+    raise notice 'categorias.sql: ya estaba aplicado, se omite';
+  end if;
+end
+$instalar$;
+
+-- ======================================================================
+-- bateria.sql  (se aplica solo si falta)
+-- ======================================================================
+do $instalar$
+begin
+  if not exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'presence' and column_name = 'battery') then
+    raise notice 'Aplicando bateria.sql...';
+    execute $parte_bateria$
+-- Batería de los viajeros (opcional). Ejecutar en Supabase → SQL Editor DESPUÉS de presencia.sql (añade columnas a
+-- public.presence). Una sola vez; el todo en uno solo lo aplica si todavía falta la columna `presence.battery`.
+--
+-- Qué hace: junto con su latido de «estoy en línea» (cada ~45 s), cada móvil envía su nivel de batería y si está cargando.
+-- Los demás viajeros lo ven en el panel de personas («Ana · 🔋 23 %») y, cuando la batería de alguien baja del 20 %, a
+-- todos les llega un aviso («🔋 Ana tiene poca batería»), para que el grupo se entere antes de que se apague el móvil.
+--
+-- Limitaciones honestas:
+--   · Los navegadores solo dejan leer la batería en Chrome/Edge (Android y escritorio). Safari (iPhone) y Firefox NO lo
+--     permiten: en esos móviles la columna queda vacía y la web lo dice con claridad.
+--   · La batería sale del propio móvil, que la envía mientras la web está abierta: no es una garantía, es un dato aproximado.
+--   · Quien no quiera compartirla la desactiva en su panel de personas; entonces se envía vacío (null).
+--
+-- Contenido:
+--   1. presence.battery   nivel de 0 a 100 (null = no se comparte o no se puede leer).
+--      presence.charging  true si está cargando (null = desconocido).
+--   2. Permisos: solo estas dos columnas se añaden al INSERT y al UPDATE por columnas que ya tenía `presence`.
+--   3. Aviso de batería baja: disparador sobre `presence` que, al cruzar el 20 % (o el 10 %) hacia abajo sin estar
+--      cargando, pide un aviso a todos los demás con public.push_notify (de avisos.sql) SI existe. Es opcional y
+--      nunca puede romper el latido: cualquier fallo al avisar se descarta con un warning.
+
+-- ---------- 1. columnas ----------
+
+alter table public.presence
+  add column battery smallint check (battery between 0 and 100),
+  add column charging boolean;
+
+-- ---------- 2. permisos ----------
+
+-- presencia.sql concede a `authenticated` INSERT y UPDATE solo en (user_id, name): el upsert de PostgREST necesita las dos
+-- columnas en los dos sitios. Se añaden las dos nuevas igual. `last_seen` sigue sin ser escribible (la pone su disparador).
+-- Las políticas de presence no cambian: cada uno solo escribe SU fila.
+grant insert (battery, charging) on public.presence to authenticated;
+grant update (battery, charging) on public.presence to authenticated;
+
+-- ---------- 3. aviso de batería baja ----------
+
+-- Al cruzar hacia abajo el 20 % (aviso normal) o el 10 % (aviso más serio) sin estar cargando. «Cruzar» significa que la
+-- lectura anterior estaba por encima del umbral (o no existía): así una batería que se queda en el 15 % no repite el aviso
+-- en cada latido. Además, push_notify agrupa avisos repetidos de la misma persona (dos horas por umbral).
+-- Se ejecuta como dueño (security definer) porque push_notify no la puede llamar un viajero, y se envuelve en un bloque de
+-- excepciones: un fallo al avisar (push_notify ausente, pg_net caído…) nunca debe impedir guardar el latido.
+create or replace function public.presence_battery_alert()
+returns trigger
+language plpgsql security definer set search_path = public, pg_temp
+as $$
+declare
+  v_low int;
+  v_title text;
+  v_who text := coalesce(nullif(btrim(new.name), ''), 'Un viajero');
+begin
+  if new.battery is null or coalesce(new.charging, false) then
+    return new;
+  end if;
+
+  if new.battery <= 10 and (tg_op = 'INSERT' or old.battery is null or old.battery > 10 or coalesce(old.charging, false)) then
+    v_low := 10;
+    v_title := '🪫 ' || v_who || ' casi se queda sin batería (' || new.battery || ' %)';
+  elsif new.battery <= 20 and (tg_op = 'INSERT' or old.battery is null or old.battery > 20 or coalesce(old.charging, false)) then
+    v_low := 20;
+    v_title := '🔋 ' || v_who || ' tiene poca batería (' || new.battery || ' %)';
+  else
+    return new;
+  end if;
+
+  begin
+    -- Solo si avisos.sql está instalado; con otra firma o sin la función, no se avisa y listo.
+    if to_regprocedure('public.push_notify(text,text,text,text,uuid,boolean,text,uuid[],text,boolean,text,integer)') is not null then
+      perform public.push_notify(
+        'bateria', v_title, 'Quizá necesite un cargador. Toca para ver dónde está.', '#mapa',
+        new.user_id, false, null, null, 'bateria-' || new.user_id::text || '-' || v_low, false,
+        'bateria-' || new.user_id::text || '-' || v_low, 7200
+      );
+    end if;
+  exception when others then
+    raise warning 'presence_battery_alert: no se pudo avisar (%): %', sqlstate, sqlerrm;
+  end;
+  return new;
+end;
+$$;
+revoke all on function public.presence_battery_alert() from public, anon, authenticated;
+
+create trigger presence_battery_alert
+  after insert or update of battery, charging on public.presence
+  for each row
+  when (new.battery is not null and new.battery <= 20)
+  execute function public.presence_battery_alert();
+$parte_bateria$;
+  else
+    raise notice 'bateria.sql: ya estaba aplicado, se omite';
+  end if;
+end
+$instalar$;
+
+-- ======================================================================
+-- chat.sql  (se aplica solo si falta)
+-- ======================================================================
+do $instalar$
+begin
+  if to_regclass('public.chat_messages') is null then
+    raise notice 'Aplicando chat.sql...';
+    execute $parte_chat$
+-- Chat de la familia con alertas. Ejecutar en Supabase → SQL Editor DESPUÉS de schema.sql, fotos.sql y adjuntos.sql (usa
+-- public.is_member(), public.photos y public.audios). Una sola vez; el todo en uno solo lo aplica si falta public.chat_messages.
+-- No depende de avisos.sql: si está instalado, los mensajes y las alertas además llegan como notificación (public.push_notify);
+-- si no, el chat funciona igual y se actualiza en directo con la web abierta.
+--
+-- Qué hay:
+--   · Mensajes de texto, con una foto y/o una nota de voz opcionales (las mismas que ya se suben a las fotos y los audios del viaje).
+--   · ALERTAS: un mensaje especial («ven aquí», «necesito ayuda») que hace sonar el móvil de todos (o de las personas elegidas) y
+--     que cada destinatario confirma con «Entendido»; quien la envió ve quién la ha visto. Solo se envían con send_alert(), que
+--     limita cuántas puede mandar cada persona (no es una barra libre para bromas).
+--
+-- Contenido:
+--   1. public.chat_messages  los mensajes. Los de texto se insertan directamente (con RLS); las alertas, SOLO con send_alert().
+--   2. public.chat_acks      quién ha confirmado cada alerta.
+--   3. public.send_alert()   crea la alerta, limita el ritmo y pide el aviso a los demás.
+--   4. Avisos de mensajes nuevos (si avisos.sql está) y limpieza de mensajes que se quedan vacíos al borrar su foto o su audio.
+--
+-- Privacidad: los viajeros autorizados leen todo el chat; una alerta dirigida a unas personas solo la ven ellas y quien la envió.
+-- Tiempo real: chat_messages y chat_acks van en supabase_realtime (Realtime respeta las políticas de lectura).
+
+-- ---------- 1. mensajes ----------
+
+create table public.chat_messages (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid default auth.uid() references auth.users (id) on delete set null,
+  name text not null default 'Viajero' check (char_length(name) between 1 and 40),
+  kind text not null default 'texto' check (kind in ('texto', 'alerta')),
+  body text not null default '' check (char_length(body) <= 1000),
+  -- Solo para alertas: a quién van (null = a todos). Lista de 1 a 40 personas, sin nulos.
+  to_users uuid[] check (to_users is null or (array_ndims(to_users) = 1 and cardinality(to_users) between 1 and 40 and array_position(to_users, null) is null)),
+  attached_photo uuid references public.photos (id) on delete set null,
+  attached_audio uuid references public.audios (id) on delete set null,
+  created_at timestamptz not null default now(),
+  -- Un mensaje de texto lleva texto o un adjunto (o los dos) y nunca destinatarios; una alerta lleva de 1 a 200 caracteres y
+  -- ningún adjunto.
+  constraint chat_messages_texto_check check (kind <> 'texto' or (to_users is null and (char_length(body) > 0 or attached_photo is not null or attached_audio is not null))),
+  constraint chat_messages_alerta_check check (kind <> 'alerta' or (char_length(body) between 1 and 200 and attached_photo is null and attached_audio is null))
+);
+create index chat_messages_created_idx on public.chat_messages (created_at desc);
+create index chat_messages_photo_idx on public.chat_messages (attached_photo);
+create index chat_messages_audio_idx on public.chat_messages (attached_audio);
+
+-- Antes de guardar: la hora la pone el servidor, el autor es quien llama y el nombre se normaliza (espacios repetidos a uno,
+-- sin espacios en los extremos, máx. 40 caracteres; vacío = «Viajero»).
+create or replace function public.chat_messages_prepare()
+returns trigger
+language plpgsql security definer set search_path = public, pg_temp
+as $$
+begin
+  new.created_at := now();
+  if auth.uid() is not null then
+    new.user_id := auth.uid();
+  end if;
+  new.name := coalesce(nullif(btrim(left(btrim(regexp_replace(coalesce(new.name, ''), '[[:space:][:cntrl:]]+', ' ', 'g')), 40)), ''), 'Viajero');
+  new.body := case when new.kind = 'alerta' then btrim(regexp_replace(coalesce(new.body, ''), '[[:space:][:cntrl:]]+', ' ', 'g')) else btrim(coalesce(new.body, '')) end;
+  return new;
+end;
+$$;
+revoke all on function public.chat_messages_prepare() from public, anon, authenticated;
+create trigger chat_messages_prepare
+  before insert on public.chat_messages
+  for each row execute function public.chat_messages_prepare();
+
+-- ---------- 2. confirmaciones de las alertas ----------
+
+create table public.chat_acks (
+  message_id uuid not null references public.chat_messages (id) on delete cascade,
+  user_id uuid not null default auth.uid() references auth.users (id) on delete cascade,
+  name text not null default 'Viajero' check (char_length(name) between 1 and 40),
+  at timestamptz not null default now(),
+  primary key (message_id, user_id)
+);
+
+create or replace function public.chat_acks_prepare()
+returns trigger
+language plpgsql set search_path = public, pg_temp
+as $$
+begin
+  new.at := now();
+  new.name := coalesce(nullif(btrim(left(btrim(regexp_replace(coalesce(new.name, ''), '[[:space:][:cntrl:]]+', ' ', 'g')), 40)), ''), 'Viajero');
+  return new;
+end;
+$$;
+revoke all on function public.chat_acks_prepare() from public, anon, authenticated;
+create trigger chat_acks_prepare
+  before insert on public.chat_acks
+  for each row execute function public.chat_acks_prepare();
+
+-- ---------- permisos y RLS ----------
+
+revoke all on public.chat_messages, public.chat_acks from anon, authenticated;
+-- Texto: se inserta directamente con estas columnas (kind, to_users, user_id y la hora no se pueden elegir). Alertas: send_alert().
+grant select, delete on public.chat_messages to authenticated;
+grant insert (id, name, body, attached_photo, attached_audio) on public.chat_messages to authenticated;
+-- Confirmaciones: se crean con el id del mensaje y el nombre; no se editan ni se borran.
+grant select on public.chat_acks to authenticated;
+grant insert (message_id, name) on public.chat_acks to authenticated;
+alter table public.chat_messages enable row level security;
+alter table public.chat_acks enable row level security;
+
+-- Se ve el chat de los viajeros; una alerta dirigida solo la ven sus destinatarios y su autor.
+create policy chat_messages_select on public.chat_messages
+  for select to authenticated
+  using (public.is_member() and (kind = 'texto' or to_users is null or user_id = auth.uid() or auth.uid() = any (to_users)));
+
+-- Cada uno escribe como él mismo y solo mensajes de texto; las fotos y audios adjuntos tienen que ser suyos.
+create policy chat_messages_insert on public.chat_messages
+  for insert to authenticated
+  with check (
+    public.is_member() and user_id = auth.uid() and kind = 'texto' and to_users is null
+    and (attached_photo is null or exists (select 1 from public.photos p where p.id = attached_photo and p.created_by = auth.uid()))
+    and (attached_audio is null or exists (select 1 from public.audios a where a.id = attached_audio and a.created_by = auth.uid()))
+  );
+
+-- Cada uno borra solo lo suyo (mensajes y alertas).
+create policy chat_messages_delete on public.chat_messages
+  for delete to authenticated
+  using (public.is_member() and user_id = auth.uid());
+
+-- Las confirmaciones las ve quien ve la alerta.
+create policy chat_acks_select on public.chat_acks
+  for select to authenticated
+  using (public.is_member() and exists (select 1 from public.chat_messages m where m.id = message_id));
+
+-- Cada uno confirma solo como él mismo, y solo alertas que puede ver (la subconsulta pasa por las políticas de chat_messages).
+create policy chat_acks_insert on public.chat_acks
+  for insert to authenticated
+  with check (
+    public.is_member() and user_id = auth.uid()
+    and exists (select 1 from public.chat_messages m where m.id = message_id and m.kind = 'alerta')
+  );
+
+-- ---------- 3. enviar una alerta ----------
+
+-- Crea una alerta de quien llama. `p_to` = a quién (null = a todos; si se da una lista, se quitan los repetidos, el propio autor y
+-- quienes no son viajeros, y debe quedar al menos uno). Limita el ritmo: una alerta cada 15 s y, como mucho, 12 por hora y
+-- persona. Pide el aviso a los demás con public.push_notify si existe (sin él, la alerta igualmente aparece en el chat y en la
+-- web abierta de los demás). Un fallo al avisar nunca impide crear la alerta. Devuelve el id.
+create or replace function public.send_alert(p_body text, p_to uuid[] default null, p_name text default null)
+returns uuid
+language plpgsql security definer set search_path = public, pg_temp
+as $$
+declare
+  v_uid uuid := auth.uid();
+  v_body text := btrim(regexp_replace(coalesce(p_body, ''), '[[:space:][:cntrl:]]+', ' ', 'g'));
+  v_name text := coalesce(nullif(btrim(left(btrim(regexp_replace(coalesce(p_name, ''), '[[:space:][:cntrl:]]+', ' ', 'g')), 40)), ''), 'Viajero');
+  v_to uuid[] := null;
+  v_id uuid;
+begin
+  if v_uid is null or not public.is_member() then
+    raise exception 'No autorizado' using errcode = '42501';
+  end if;
+  if v_body = '' then
+    raise exception 'Escribe el mensaje de la alerta';
+  end if;
+  if char_length(v_body) > 200 then
+    raise exception 'La alerta admite como máximo 200 caracteres';
+  end if;
+  if p_to is not null then
+    if array_ndims(p_to) is distinct from 1 or cardinality(p_to) > 40 then
+      raise exception 'Elige a quién enviar la alerta (hasta 40 personas)';
+    end if;
+    select coalesce(array_agg(distinct u.id), '{}') into v_to
+      from auth.users u
+      join public.members m on m.email = lower(u.email)
+      where u.id = any (p_to) and u.id <> v_uid;
+    if cardinality(v_to) = 0 then
+      raise exception 'Elige a quién enviar la alerta';
+    end if;
+  end if;
+  -- Ritmo (con un bloqueo por persona para que dos toques seguidos no se salten el límite).
+  perform pg_advisory_xact_lock(hashtextextended('send_alert:' || v_uid::text, 0));
+  if exists (select 1 from public.chat_messages where user_id = v_uid and kind = 'alerta' and created_at > now() - interval '15 seconds') then
+    raise exception 'Espera unos segundos antes de enviar otra alerta';
+  end if;
+  if (select count(*) from public.chat_messages where user_id = v_uid and kind = 'alerta' and created_at > now() - interval '1 hour') >= 12 then
+    raise exception 'Has enviado muchas alertas seguidas. Espera un rato antes de mandar otra';
+  end if;
+
+  insert into public.chat_messages (user_id, name, kind, body, to_users) values (v_uid, v_name, 'alerta', v_body, v_to) returning id into v_id;
+
+  begin
+    if to_regprocedure('public.push_notify(text,text,text,text,uuid,boolean,text,uuid[],text,boolean,text,integer)') is not null then
+      perform public.push_notify('alerta', '🚨 ' || v_name || ' manda una alerta', v_body, '#chat', v_uid, true, null, v_to, 'alerta-' || v_id::text, false, null, 0);
+    end if;
+  exception when others then
+    raise warning 'send_alert: no se pudo avisar (%): %', sqlstate, sqlerrm;
+  end;
+  return v_id;
+end;
+$$;
+revoke all on function public.send_alert(text, uuid[], text) from public, anon;
+grant execute on function public.send_alert(text, uuid[], text) to authenticated;
+
+-- ---------- 4. avisos de mensajes nuevos y limpieza ----------
+
+-- Cada mensaje de texto avisa a los demás (si avisos.sql está instalado). Las ráfagas de un mismo autor se agrupan: durante 30 s
+-- solo el primer mensaje genera notificación. Nunca puede impedir guardar el mensaje.
+create or replace function public.chat_messages_notify()
+returns trigger
+language plpgsql security definer set search_path = public, pg_temp
+as $$
+declare
+  v_text text;
+begin
+  v_text := case
+    when new.body <> '' then left(new.body, 140)
+    when new.attached_photo is not null then '📷 Foto'
+    else '🎤 Nota de voz'
+  end;
+  begin
+    if to_regprocedure('public.push_notify(text,text,text,text,uuid,boolean,text,uuid[],text,boolean,text,integer)') is not null then
+      perform public.push_notify('chat', '💬 ' || new.name, v_text, '#chat', new.user_id, false, null, null, 'chat', false, 'chat-' || coalesce(new.user_id::text, 'x'), 30);
+    end if;
+  exception when others then
+    raise warning 'chat_messages_notify: no se pudo avisar (%): %', sqlstate, sqlerrm;
+  end;
+  return new;
+end;
+$$;
+revoke all on function public.chat_messages_notify() from public, anon, authenticated;
+create trigger chat_messages_notify
+  after insert on public.chat_messages
+  for each row when (new.kind = 'texto')
+  execute function public.chat_messages_notify();
+
+-- Al borrar una foto o un audio, los mensajes que SOLO tenían ese adjunto (sin texto ni el otro adjunto) se borran antes: si no,
+-- el `on delete set null` los dejaría vacíos y chat_messages_texto_check haría fallar el borrado de la foto o del audio.
+create or replace function public.drop_chat_left_empty()
+returns trigger
+language plpgsql security definer set search_path = public, pg_temp
+as $$
+begin
+  if tg_table_name = 'photos' then
+    delete from public.chat_messages where kind = 'texto' and attached_photo = old.id and body = '' and attached_audio is null;
+  else
+    delete from public.chat_messages where kind = 'texto' and attached_audio = old.id and body = '' and attached_photo is null;
+  end if;
+  return old;
+end;
+$$;
+revoke all on function public.drop_chat_left_empty() from public, anon, authenticated;
+create trigger photos_drop_empty_chat
+  before delete on public.photos
+  for each row execute function public.drop_chat_left_empty();
+create trigger audios_drop_empty_chat
+  before delete on public.audios
+  for each row execute function public.drop_chat_left_empty();
+
+-- ---------- tiempo real ----------
+
+alter publication supabase_realtime add table public.chat_messages, public.chat_acks;
+$parte_chat$;
+  else
+    raise notice 'chat.sql: ya estaba aplicado, se omite';
   end if;
 end
 $instalar$;

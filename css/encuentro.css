@@ -1,0 +1,144 @@
+/* «Punto de encuentro»: botón del mapa y de «Hoy», banner de arriba, pin del mapa y tarjeta (js/encuentro.js). */
+:root { --meet: #e11d48; --meet-dark: #be123c; --meet-soft: rgb(225 29 72 / 0.12); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --meet-soft: rgb(251 113 133 / 0.16); } }
+:root[data-theme="dark"] { --meet-soft: rgb(251 113 133 / 0.16); }
+
+/* ---- botón rojo en la fila de chips del mapa ---- */
+.chip-day.meetup-chip { min-height: 44px; flex: none; max-width: min(78vw, 300px); color: var(--meet-dark); border-color: color-mix(in srgb, var(--meet) 45%, var(--glass-line)); font-weight: 750; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .chip-day.meetup-chip { color: #fda4af; } }
+:root[data-theme="dark"] .chip-day.meetup-chip { color: #fda4af; }
+.meetup-chip .mc-t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chip-day.meetup-chip.is-live { background: var(--meet); border-color: transparent; color: #fff; }
+:root[data-theme="dark"] .chip-day.meetup-chip.is-live { color: #fff; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .chip-day.meetup-chip.is-live { color: #fff; } }
+.chip-day.meetup-chip.needs { animation: meet-nudge 2.2s ease-in-out infinite; }
+
+/* ---- botón en el panel «Hoy» ---- */
+.btn.meetup-btn { min-height: 44px; }
+.meetup-btn.is-live { background: var(--meet); border-color: transparent; color: #fff; }
+.today .meetup-btn:not(.is-live) { color: var(--meet-dark); }
+
+/* ---- banner fijo arriba (todas las pestañas menos el mapa) ---- */
+.meetup-banner {
+  position: sticky; top: calc(var(--appbar-h) + var(--safe-t)); z-index: 41; margin: 8px 12px 0; padding: 12px 12px 12px 14px;
+  border-radius: 20px; color: #fff; background: linear-gradient(135deg, #e11d48, #be123c); box-shadow: 0 10px 28px rgb(190 18 60 / 0.45), var(--shadow);
+  animation: meet-banner-in 0.5s var(--spring), meet-glow 2.4s ease-in-out 0.5s infinite;
+}
+body[data-view="map"] .meetup-banner, body[data-view="gate"] .meetup-banner { display: none; }
+.mb-top { display: flex; align-items: center; gap: 10px; }
+.mb-ico { flex: none; font-size: 1.9rem; line-height: 1; }
+.mb-text { flex: 1; min-width: 0; }
+.mb-text strong { display: block; font-size: 0.98rem; line-height: 1.25; overflow-wrap: anywhere; }
+.mb-text small { display: block; font-size: 0.8rem; opacity: 0.92; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mb-later { flex: none; align-self: flex-start; min-height: 40px; min-width: 56px; padding: 0 10px; border: 0; border-radius: 12px; background: rgb(255 255 255 / 0.16); color: #fff; font-size: 0.82rem; font-weight: 700; cursor: pointer; }
+.mb-actions { display: flex; gap: 8px; margin-top: 10px; }
+.mb-btn { flex: 1; min-height: 46px; padding: 0 10px; border: 0; border-radius: 14px; background: #fff; color: var(--meet-dark); font-size: 0.92rem; font-weight: 800; cursor: pointer; transition: transform 0.25s var(--spring); }
+.mb-btn.ghost { background: rgb(255 255 255 / 0.18); color: #fff; }
+.mb-btn:active, .mb-later:active { transform: scale(0.95); }
+@media (max-width: 420px) { .meetup-banner { margin: 8px 12px 0; padding: 10px 10px 10px 12px; } .mb-ico { font-size: 1.6rem; } }
+@media (orientation: landscape) and (max-height: 520px) and (max-width: 999px) { .meetup-banner { margin: 8px 12px 0 calc(var(--rail-x, 10px) + var(--rail-w, 76px) + 14px); } }
+
+/* ---- pin en el mapa ---- */
+.meetup-pin { position: relative; display: block; width: 64px; height: 72px; padding: 0; border: 0; background: none; cursor: pointer; -webkit-touch-callout: none; user-select: none; -webkit-user-select: none; }
+.mp-halo { position: absolute; left: 50%; bottom: 10px; width: 88px; height: 88px; margin-left: -44px; border-radius: 50%; background: radial-gradient(circle, rgb(225 29 72 / 0.55) 0%, rgb(225 29 72 / 0.22) 55%, transparent 72%); }
+.mp-emoji { position: absolute; left: 50%; bottom: 3px; transform: translateX(-50%); font-size: 64px; line-height: 1; filter: drop-shadow(0 4px 5px rgb(0 0 0 / 0.45)); animation: meet-bob 1.6s ease-in-out infinite; transform-origin: 50% 100%; }
+.mp-ring { position: absolute; left: 50%; bottom: 0; width: 26px; height: 26px; margin-left: -13px; border-radius: 50%; border: 3px solid var(--meet); background: rgb(225 29 72 / 0.22); opacity: 0; animation: meet-ring 2s ease-out infinite; }
+.mp-ring.r2 { animation-delay: 1s; }
+.mp-label {
+  position: absolute; left: 50%; bottom: calc(100% + 2px); transform: translateX(-50%); max-width: min(60vw, 240px); padding: 3px 10px; border-radius: 999px;
+  background: var(--meet); color: #fff; border: 2px solid #fff; font-size: 0.78rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; box-shadow: 0 3px 10px rgb(0 0 0 / 0.35);
+}
+.mp-label b { font-weight: 800; }
+
+/* ---- diálogo: tarjeta y fijar un punto ---- */
+#meetup-dialog h3 { margin: 16px 0 8px; font-size: 0.74rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+#meetup-dialog label { display: grid; gap: 4px; margin-top: 10px; font-size: 0.85rem; font-weight: 650; }
+#meetup-dialog .hint { margin: 4px 0 10px; }
+.meet-by { display: flex; align-items: center; gap: 12px; margin-top: 8px; }
+.meet-by > div { min-width: 0; font-size: 0.95rem; }
+.meet-by small { display: block; color: var(--muted); font-size: 0.8rem; font-weight: 500; }
+#meetup-dialog .you { display: inline; margin-left: 2px; padding: 1px 7px; font-size: 0.7rem; vertical-align: 1px; }
+.meet-where { margin-top: 12px; padding: 12px 14px; border-radius: 16px; background: var(--meet-soft); border: 1px solid color-mix(in srgb, var(--meet) 35%, var(--line)); }
+.meet-place-name { display: flex; align-items: center; gap: 6px; font-size: 1.08rem; font-weight: 800; overflow-wrap: anywhere; }
+.meet-place-name .ico { flex: none; color: var(--meet); }
+.meet-note { margin-top: 4px; font-size: 0.92rem; overflow-wrap: anywhere; }
+.meet-dist { display: flex; align-items: center; gap: 6px; margin-top: 10px; font-size: 0.88rem; font-weight: 650; color: var(--muted); }
+.meet-dist .ico { flex: none; color: var(--accent); }
+.meet-dist.is-here { color: var(--ok); }
+.meet-dist.is-here .ico { color: var(--ok); }
+.meet-locate { margin-top: 6px; display: inline-flex; align-items: center; gap: 6px; }
+.meet-go { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.meet-go .btn { flex: 1 1 140px; }
+.meet-mine { font-size: 0.95rem; font-weight: 700; }
+.meet-mine.is-none { color: var(--muted); font-weight: 600; }
+
+.meet-answers { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 10px; }
+.meet-ans {
+  display: grid; justify-items: center; align-content: center; gap: 4px; min-height: 78px; padding: 8px 4px; border-radius: 18px; cursor: pointer;
+  border: 2px solid var(--line); background: var(--surface-2); color: var(--text); font-size: 0.86rem; font-weight: 750; line-height: 1.15; text-align: center;
+  transition: transform 0.25s var(--spring), background 0.2s, border-color 0.2s;
+}
+.meet-ans span { font-size: 1.7rem; line-height: 1; }
+.meet-ans:active { transform: scale(0.95); }
+.meet-ans:disabled { opacity: 0.55; cursor: default; }
+.meet-ans[aria-pressed="true"] { background: var(--accent); border-color: transparent; color: var(--accent-ink); }
+.meet-ans[data-st="llegue"][aria-pressed="true"] { background: var(--ok); color: #fff; }
+.meet-ans[data-st="no_puedo"][aria-pressed="true"] { background: var(--muted); color: #fff; }
+.meet-eta { margin-top: 10px; padding: 10px 12px; border-radius: 16px; background: var(--surface-2); border: 1px solid var(--line); }
+.meet-eta p { margin-bottom: 8px; font-size: 0.86rem; font-weight: 700; }
+.meet-eta > div, .meet-quick { display: flex; flex-wrap: wrap; gap: 8px; }
+.meet-quick { margin-top: 10px; }
+.meet-chip {
+  min-height: 44px; min-width: 64px; padding: 0 16px; border-radius: 999px; cursor: pointer; border: 1px solid var(--line); background: var(--surface); color: var(--text);
+  font-size: 0.9rem; font-weight: 700; transition: transform 0.2s var(--spring), background 0.2s;
+}
+.meet-chip:active { transform: scale(0.95); }
+.meet-chip[aria-pressed="true"] { background: var(--accent); border-color: transparent; color: var(--accent-ink); }
+.meet-quick .meet-chip { min-height: 42px; padding: 0 14px; font-size: 0.84rem; }
+
+.meet-count { font-size: 0.86rem; color: var(--muted); font-weight: 650; }
+.meet-list { display: grid; gap: 8px; margin: 8px 0 0; padding: 0; list-style: none; }
+.meet-row { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 14px; background: var(--surface-2); border: 1px solid var(--line); }
+.meet-row.st-llegue { border-color: color-mix(in srgb, var(--ok) 45%, var(--line)); }
+.meet-who { flex: 1; min-width: 0; display: grid; }
+.meet-who strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.92rem; }
+.meet-who small { font-size: 0.78rem; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.meet-missing { margin-top: 10px; padding: 10px 12px; border-radius: 14px; background: color-mix(in srgb, #f59e0b 16%, var(--surface)); border: 1px solid color-mix(in srgb, #f59e0b 40%, var(--line)); font-size: 0.88rem; overflow-wrap: anywhere; }
+.meet-done { margin-top: 10px; padding: 10px 12px; border-radius: 14px; background: color-mix(in srgb, var(--ok) 16%, var(--surface)); border: 1px solid color-mix(in srgb, var(--ok) 40%, var(--line)); font-size: 0.88rem; font-weight: 650; }
+.meet-err { margin-top: 10px; padding: 10px 12px; border-radius: 14px; background: color-mix(in srgb, var(--danger) 13%, var(--surface)); border: 1px solid color-mix(in srgb, var(--danger) 40%, var(--line)); color: var(--danger); font-size: 0.86rem; font-weight: 650; overflow-wrap: anywhere; }
+.meet-notice { margin-top: 12px; align-items: flex-start; }
+.meet-notice > span { font-size: 1.4rem; line-height: 1.2; }
+#meetup-dialog .dialog-actions { margin-top: 14px; }
+#meetup-dialog .dialog-actions .btn { min-height: 46px; }
+.meet-send { flex: 1 1 160px; }
+
+.meet-choices { display: grid; gap: 10px; margin-top: 6px; }
+.meet-choice, .meet-place {
+  display: flex; align-items: center; gap: 14px; width: 100%; min-height: 66px; padding: 12px 14px; border-radius: 18px; text-align: left; cursor: pointer;
+  border: 1px solid var(--line); background: var(--surface-2); color: var(--text); transition: transform 0.25s var(--spring), background 0.2s;
+}
+.meet-choice:active, .meet-place:active { transform: scale(0.97); }
+.meet-choice:disabled { opacity: 0.6; cursor: default; }
+.meet-choice > span:first-child { flex: none; font-size: 1.8rem; line-height: 1; }
+.meet-choice > span:last-child { display: grid; min-width: 0; }
+.meet-choice strong, .meet-place strong { font-size: 1rem; overflow-wrap: anywhere; }
+.meet-choice small, .meet-place small { color: var(--muted); font-size: 0.8rem; overflow-wrap: anywhere; }
+.meet-places { display: grid; gap: 8px; margin-top: 8px; }
+.meet-place { display: grid; gap: 2px; min-height: 56px; }
+.meet-chosen { display: flex; align-items: center; gap: 10px; margin-top: 8px; padding: 10px 12px; border-radius: 16px; background: var(--meet-soft); border: 1px solid color-mix(in srgb, var(--meet) 35%, var(--line)); }
+.meet-chosen > span:nth-child(2) { flex: 1; min-width: 0; display: grid; }
+.meet-chosen strong { overflow-wrap: anywhere; }
+.meet-chosen small { color: var(--muted); font-size: 0.78rem; overflow-wrap: anywhere; }
+@media (hover: hover) { .meet-choice:hover, .meet-place:hover, .meet-chip:hover:not([aria-pressed="true"]) { background: var(--accent-soft); } }
+
+@keyframes meet-banner-in { from { opacity: 0; transform: translateY(-16px) scale(0.97); } to { opacity: 1; transform: none; } }
+@keyframes meet-glow { 50% { box-shadow: 0 10px 34px rgb(225 29 72 / 0.7), var(--shadow); } }
+@keyframes meet-nudge { 0%, 100% { transform: none; } 8% { transform: scale(1.06); } 16% { transform: none; } }
+@keyframes meet-bob { 50% { transform: translateX(-50%) translateY(-5px); } }
+@keyframes meet-ring { from { transform: scale(0.4); opacity: 0.9; } to { transform: scale(3.6); opacity: 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .meetup-banner, .chip-day.meetup-chip.needs, .mp-emoji { animation: none; }
+  .mp-ring { display: none; }
+}
+:root[data-motion="off"] .meetup-banner, :root[data-motion="off"] .chip-day.meetup-chip.needs, :root[data-motion="off"] .mp-emoji { animation: none; }
+:root[data-motion="off"] .mp-ring { display: none; }

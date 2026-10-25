@@ -1,0 +1,19 @@
+/* Batería de los viajeros en el panel de personas. */
+.viajero .batt { display: block; font-weight: 650; color: var(--muted); }
+.viajero .batt-low { color: #b45309; }
+.viajero .batt-critical { color: #b91c1c; }
+.viajero .batt-charging { color: #15803d; }
+.batt-warn {
+  margin: 0 0 10px; padding: 10px 12px; border-radius: 14px; font-size: 0.9rem; font-weight: 650;
+  background: #fef3c7; color: #92400e; border: 1px solid #fcd34d;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .viajero .batt-low { color: #fbbf24; }
+  :root:not([data-theme="light"]) .viajero .batt-critical { color: #f87171; }
+  :root:not([data-theme="light"]) .viajero .batt-charging { color: #4ade80; }
+  :root:not([data-theme="light"]) .batt-warn { background: #422006; color: #fde68a; border-color: #854d0e; }
+}
+:root[data-theme="dark"] .viajero .batt-low { color: #fbbf24; }
+:root[data-theme="dark"] .viajero .batt-critical { color: #f87171; }
+:root[data-theme="dark"] .viajero .batt-charging { color: #4ade80; }
+:root[data-theme="dark"] .batt-warn { background: #422006; color: #fde68a; border-color: #854d0e; }

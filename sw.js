@@ -9,9 +9,13 @@ const SHELL_FILES = [
   "./", "index.html", "css/styles.css", "manifest.webmanifest", "icons/icon.svg",
   "js/album.js", "js/albumview.js", "js/mapimage.js", "js/pdf.js", "js/settings.js", "js/weather.js", "js/places.js", "js/live.js",
   "js/juegos/index.js", "js/juegos/batalla.js", "js/juegos/bolsa.js", "js/juegos/bingo.js",
-  "css/juegos.css", "css/juego-batalla.css", "css/juego-bolsa.css", "css/juego-bingo.css", "js/ideas.js", "js/media.js", "js/comments.js", "js/attach.js", "js/accessdialog.js", "js/people.js", "js/presence.js", "js/ledger.js", "js/extras.js", "js/expensedialog.js", "js/share.js", "js/discover.js",
+  "css/juegos.css", "css/bateria.css", "css/ubicar.css", "css/chat.css", "js/chat.js", "css/actualizar.css", "js/actualizar.js", "js/ubicar.js", "js/bateria.js", "js/recorrido.js", "js/maprecorrido.js", "css/juego-batalla.css", "css/juego-bolsa.css", "css/juego-bingo.css", "js/ideas.js", "js/media.js", "js/comments.js", "js/attach.js", "js/accessdialog.js", "js/people.js", "js/presence.js", "js/ledger.js", "js/extras.js", "js/expensedialog.js", "js/share.js", "js/discover.js",
   "js/app.js", "js/config.js", "js/dialogs.js", "js/export.js", "js/geo.js", "js/icons.js",
   "js/images.js", "js/map.js", "js/state.js", "js/store.js", "js/trip.js", "js/util.js", "js/views.js",
+  "css/cola.css", "js/cola.js", "js/formatos.js", "js/fotoloc.js", // cola de fotos sin conexión, formatos de foto y ubicación de las fotos
+  "css/encuentro.css", "js/encuentro.js", // punto de encuentro
+  "css/avisos.css", "js/avisos.js", "js/avisos-push.js", "icons/badge.png", // avisos: alertas en pantalla, campana y notificaciones
+  "css/categorias.css", "js/categorias.js", "js/gastopresets.js", "js/gastoloc.js", "js/mapgastos.js", // categorías de gasto, atajos, ubicación del gasto y gastos en el mapa
 ];
 const CDN_HOSTS = ["cdn.jsdelivr.net"]; // librerías con versión fija: se pueden guardar para siempre
 
@@ -90,3 +94,75 @@ async function cacheFirst(request) {
   if (response.ok || response.type === "opaque") cache.put(request, response.clone()).catch(() => {});
   return response;
 }
+
+// ---------- avisos (Web Push) ----------
+// La Edge Function `push` envía un JSON {id, kind, title, body, url, tag, urgent, image, ts}. Con la web visible y en primer plano no se
+// enseña la notificación del sistema: se avisa a la página para que muestre su alerta resaltada (así no suena dos veces). En iPhone sí se
+// enseña siempre: Safari retira la suscripción a quien recibe avisos sin mostrar ninguna notificación.
+const IOS = /iPhone|iPad|iPod/.test(self.navigator?.userAgent || "");
+
+async function handlePush(event) {
+  let data = {};
+  try {
+    data = event.data ? event.data.json() : {};
+  } catch {
+    data = { title: "Nuestro viaje", body: event.data ? event.data.text() : "" };
+  }
+  const urgent = Boolean(data.urgent);
+  const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+  const front = windows.find((c) => c.visibilityState === "visible" && c.focused);
+  if (front) {
+    front.postMessage({ type: "push", ...data });
+    if (!IOS) return;
+  }
+  await self.registration.showNotification(data.title || "Nuestro viaje", {
+    body: data.body || "",
+    icon: "icons/icon-192.png",
+    badge: "icons/badge.png",
+    image: data.image || undefined,
+    tag: data.tag || data.id || "aviso", // renotify exige una etiqueta
+    renotify: true,
+    timestamp: data.ts || Date.now(),
+    data: { url: data.url || "#mapa", id: data.id || null, kind: data.kind || null },
+    vibrate: urgent ? [300, 120, 300, 120, 600] : [180, 80, 180],
+    silent: false,
+    requireInteraction: urgent,
+    actions: urgent ? [{ action: "ver", title: "Ver" }] : [],
+    lang: "es",
+  });
+}
+self.addEventListener("push", (event) => event.waitUntil(handlePush(event)));
+
+// Tocar la notificación: se enfoca la web que ya esté abierta y se la lleva al sitio del aviso, o se abre una nueva.
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const url = (event.notification.data && event.notification.data.url) || "#mapa";
+  event.waitUntil(
+    (async () => {
+      const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+      const open = windows.find((c) => c.url.startsWith(self.registration.scope));
+      if (open) {
+        await open.focus().catch(() => {});
+        open.postMessage({ type: "navigate", url });
+        return;
+      }
+      await self.clients.openWindow(new URL(url, self.registration.scope).href);
+    })(),
+  );
+});
+
+// El navegador cambió o caducó la suscripción: se intenta renovarla aquí; la web la guarda en la base de datos al abrirse
+// (el service worker no tiene la sesión de la persona) y se avisa a las ventanas abiertas para que lo hagan ya.
+self.addEventListener("pushsubscriptionchange", (event) => {
+  event.waitUntil(
+    (async () => {
+      try {
+        const key = event.oldSubscription && event.oldSubscription.options && event.oldSubscription.options.applicationServerKey;
+        if (!event.newSubscription && key) await self.registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
+      } catch {
+        /* sin permiso o sin red: la web lo detectará al abrirse y avisará */
+      }
+      for (const c of await self.clients.matchAll({ type: "window", includeUncontrolled: true })) c.postMessage({ type: "resubscribed" });
+    })(),
+  );
+});

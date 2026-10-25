@@ -3,6 +3,7 @@
 import { state, ctx } from "./state.js";
 import { settings, setSetting } from "./settings.js";
 import { getName } from "./store.js";
+import { batteryPayload, watchBattery } from "./bateria.js";
 
 const BEAT_MS = 45_000;
 const POLL_MS = 30_000;
@@ -10,11 +11,12 @@ let timers = [];
 let started = false;
 let onPeople = () => {};
 let warned = false;
+let unwatchBattery = () => {};
 
 async function beat() {
   if (document.hidden || !settings.showOnline || !getName() || !state.presenceOn) return;
   try {
-    await ctx.store.heartbeat(getName());
+    await ctx.store.heartbeat(getName(), await batteryPayload());
   } catch (err) {
     if (!warned) console.warn("Presencia:", err.message || err);
     warned = true;
@@ -46,6 +48,11 @@ export function startPresence(callback) {
   started = true;
   timers = [setInterval(beat, BEAT_MS), setInterval(refreshPeople, POLL_MS)];
   document.addEventListener("visibilitychange", onVisible);
+  watchBattery(beat).then((stop) => {
+    // Si entre tanto se paró la presencia, se deja de escuchar enseguida.
+    if (started) unwatchBattery = stop;
+    else stop();
+  });
   tick();
 }
 
@@ -55,6 +62,8 @@ export function stopPresence() {
   for (const t of timers) clearInterval(t);
   timers = [];
   document.removeEventListener("visibilitychange", onVisible);
+  unwatchBattery();
+  unwatchBattery = () => {};
 }
 
 // "Mostrar que estoy en línea": al apagarlo se borra el rastro propio; al encenderlo se vuelve a aparecer enseguida.
@@ -66,5 +75,12 @@ export async function setShowOnline(on) {
   } catch (err) {
     console.warn("Presencia:", err.message || err);
   }
+  await refreshPeople();
+}
+
+// «Compartir mi batería»: al cambiarlo se envía enseguida el valor nuevo (o vacío, si se apaga) para que los demás lo vean al momento.
+export async function setShareBattery(on) {
+  setSetting("shareBattery", on);
+  await beat();
   await refreshPeople();
 }

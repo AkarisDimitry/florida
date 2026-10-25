@@ -13,10 +13,13 @@ import { describeWeather, packingTips, WEATHER_KIND } from "./weather.js";
 import { buildAlbum, photoDay } from "./album.js";
 import { planNav, renderExpenses, renderPacking } from "./extras.js";
 import { onlineCount } from "./people.js";
+import { encuentroChip, encuentroButton } from "./encuentro.js";
 import { threadHtml, commentsOf } from "./comments.js";
 import { clock } from "./media.js";
 import { renderIdeas } from "./ideas.js";
 import { totalCents, fromCents } from "./ledger.js";
+import { mergeQueued, queuedTile, colaBand, isFresh } from "./cola.js";
+import { locateHintHtml } from "./ubicar.js";
 
 const { trip } = config;
 
@@ -187,7 +190,7 @@ export function renderToday() {
     ${w?.sunrise ? `<p class="today-sun">🌅 ${esc(w.sunrise)} · 🌇 ${esc(w.sunset)}</p>` : ""}
     ${nextBlock}
     <div class="today-stats"><span>${icon("route", 15)} ${acts.length} ${acts.length === 1 ? "plan" : "planes"}</span><span>${icon("download", 15)} ${esc(money.format(spent))}</span><span>${icon("camera", 15)} ${photosToday} ${photosToday === 1 ? "foto" : "fotos"}</span></div>
-    <div class="today-actions"><button class="btn small primary" data-action="camera">${icon("camera", 15)} Hacer foto</button><button class="btn small" data-action="add" data-day="${esc(today)}">${icon("plus", 15)} Añadir plan</button></div>
+    <div class="today-actions"><button class="btn small primary" data-action="camera">${icon("camera", 15)} Hacer foto</button><button class="btn small" data-action="add" data-day="${esc(today)}">${icon("plus", 15)} Añadir plan</button>${encuentroButton()}</div>
   </section>`;
 }
 
@@ -271,7 +274,7 @@ function renderDays() {
 
   const days = allDays();
   if (!days.length) {
-    return `<div class="plan-grid"><aside class="plan-aside">${renderToday()}${stats}</aside><div class="plan-main">${gate("Todavía no hay nada", "Añade la primera actividad del viaje.", `<button class="btn primary" data-action="add" data-day="${todayIso()}">${icon("plus", 18)} Añadir actividad</button>`)}</div></div>`;
+    return `<div class="plan-grid"><aside class="plan-aside">${colaBand()}${renderToday()}${stats}</aside><div class="plan-main">${gate("Todavía no hay nada", "Añade la primera actividad del viaje.", `<button class="btn primary" data-action="add" data-day="${todayIso()}">${icon("plus", 18)} Añadir actividad</button>`)}</div></div>`;
   }
 
   const commentsByActivity = groupBy(state.comments, (c) => c.activity_id);
@@ -304,24 +307,27 @@ function renderDays() {
       ${items.length ? items.map((a) => card(a, commentsByActivity.get(a.id) ?? [], index++)).join("") : `<p class="empty">Sin planes todavía.</p>`}
     </section>`;
   });
-  return `<div class="plan-grid"><aside class="plan-aside">${renderToday()}${renderIdeas()}${stats}</aside><div class="plan-main">${filters}${sections.join("")}</div></div>`;
+  return `<div class="plan-grid"><aside class="plan-aside">${colaBand()}${renderToday()}${renderIdeas()}${stats}</aside><div class="plan-main">${filters}${sections.join("")}</div></div>`;
 }
 
 // ---------- fotos ----------
 
 export function renderPhotos() {
-  const photos = photosNewestFirst();
-  const located = photos.filter(hasCoords).length;
+  const photos = mergeQueued(photosNewestFirst()); // + las que esperan señal en el móvil (cola.js)
+  const waiting = photos.filter((p) => p.queued && p.qstate !== "done").length;
+  const real = photos.length - waiting;
+  const located = photos.filter((p) => hasCoords(p) && !(p.queued && p.qstate !== "done")).length;
   const head = `<div class="page-head">
-    <div><h2>Fotos</h2><p class="page-sub">${photos.length} ${photos.length === 1 ? "foto" : "fotos"}${photos.length ? ` · ${located} con ubicación` : ""}</p></div>
+    <div><h2>Fotos</h2><p class="page-sub">${real} ${real === 1 ? "foto" : "fotos"}${real ? ` · ${located} con ubicación` : ""}${waiting ? ` · ${waiting} en cola` : ""}</p></div>
     <div class="head-actions">
       ${located ? `<button class="btn small" data-action="photos-on-map">${icon("map", 16)} Ver en el mapa</button>` : ""}
       <button class="btn small" data-action="upload">${icon("images", 16)} Elegir fotos</button>
       <button class="btn small primary" data-action="camera">${icon("camera", 16)} Hacer foto</button>
     </div>
   </div>`;
+  const band = colaBand();
   if (!photos.length) {
-    return head + gate("Aún no hay fotos", "Sube las primeras: si traen ubicación GPS, aparecerán en el mapa donde se tomaron.", `<button class="btn primary" data-action="camera">${icon("camera", 18)} Hacer una foto</button> <button class="btn" data-action="upload">${icon("images", 18)} Elegir fotos</button>`);
+    return head + band + gate("Aún no hay fotos", "Sube las primeras: si traen ubicación GPS, aparecerán en el mapa donde se tomaron.", `<button class="btn primary" data-action="camera">${icon("camera", 18)} Hacer una foto</button> <button class="btn" data-action="upload">${icon("images", 18)} Elegir fotos</button>`);
   }
   // Se agrupan por día siguiendo el mismo orden que el visor (de la más reciente a la más antigua).
   const groups = [];
@@ -336,8 +342,10 @@ export function renderPhotos() {
       const label = g.day ? capitalize(fmtDayShort.format(utc(g.day))) : "Sin fecha";
       const thumbs = g.items
         .map(
-          (p, k) => `<button class="photo ${k === 0 && g.items.length >= 4 ? "is-featured" : ""}" style="--i:${Math.min(n++, 24)}" data-action="open-photo" data-id="${esc(p.id)}" aria-label="Abrir foto de ${esc(p.created_by_name || "un viajero")}">
-            <img src="${esc(k === 0 && g.items.length >= 4 ? p.full_url || p.thumb_url : p.thumb_url)}" alt="${esc(p.caption || "")}" loading="lazy" decoding="async" onload="this.classList.add('loaded')">
+          (p, k) => p.queued
+            ? queuedTile(p, { featured: k === 0 && g.items.length >= 4, delay: Math.min(n++, 24) })
+            : `<button class="photo ${k === 0 && g.items.length >= 4 ? "is-featured" : ""}" style="--i:${Math.min(n++, 24)}" data-action="open-photo" data-id="${esc(p.id)}" aria-label="Abrir foto de ${esc(p.created_by_name || "un viajero")}">
+            <img ${isFresh(p.id) ? 'class="loaded" ' : ""}src="${esc(k === 0 && g.items.length >= 4 ? p.full_url || p.thumb_url : p.thumb_url)}" alt="${esc(p.caption || "")}" loading="lazy" decoding="async" onload="this.classList.add('loaded')">
             ${hasCoords(p) ? `<span class="geo-badge" title="Con ubicación">${icon("pin", 13)}</span>` : ""}
           </button>`,
         )
@@ -345,7 +353,7 @@ export function renderPhotos() {
       return `<section class="photo-day"><h3>${esc(label)} <small>${g.items.length} ${g.items.length === 1 ? "foto" : "fotos"}</small></h3><div class="photo-grid">${thumbs}</div></section>`;
     })
     .join("");
-  return head + html;
+  return head + band + html;
 }
 
 // ---------- dónde comimos ----------
@@ -406,6 +414,7 @@ export function renderChips() {
   const live = friends.length ? `<button class="chip-day live" data-action="fit-friends"><span class="dot"></span>${friends.length} en vivo</button>` : "";
   const all = `<button class="chip-day ${state.day ? "" : "is-on"}" role="tab" aria-selected="${!state.day}" data-action="select-day" data-day="">Todo el viaje</button>`;
   return (
+    encuentroChip() + // «📍 Punto de encuentro»: el primer botón de la fila (rojo si hay uno activo)
     live +
     all +
     days
@@ -421,11 +430,12 @@ export function renderChips() {
 
 export function renderSheet() {
   const stops = state.day ? stopsOfDay(state.day) : locatedStops();
+  const locateHint = locateHintHtml(state.day || "");
   if (!stops.length) {
     return `<div class="sheet-empty">
       <div class="gate-art sm">${icon("pin", 26)}</div>
       <div><strong>${state.day ? "Este día no tiene lugares en el mapa" : "Aún no hay lugares en el mapa"}</strong>
-      <p>Mantén pulsado el mapa para añadir un lugar, o añade la ubicación a una actividad.</p></div>
+      <p>Mantén pulsado el mapa para añadir un lugar, o añade la ubicación a una actividad.</p>${locateHint}</div>
       <button class="btn primary small" data-action="add" data-day="${esc(state.day || todayIso())}">${icon("plus", 16)} Añadir</button>
     </div>`;
   }
@@ -452,5 +462,5 @@ export function renderSheet() {
     })
     .join("");
   const city = state.day ? state.places[state.day] : "";
-  return `<div class="sheet-head"><h2>${esc(title)}${state.day ? weatherChip(state.day) : ""}</h2><p>${[city ? `${icon("pin", 13)} ${esc(city)}` : "", ...facts].filter(Boolean).join(" · ")}</p></div><div class="sheet-track">${cards}</div>`;
+  return `<div class="sheet-head"><h2>${esc(title)}${state.day ? weatherChip(state.day) : ""}</h2><p>${[city ? `${icon("pin", 13)} ${esc(city)}` : "", ...facts].filter(Boolean).join(" · ")}</p>${locateHint}</div><div class="sheet-track">${cards}</div>`;
 }

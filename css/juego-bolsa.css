@@ -1,4 +1,4 @@
-/* Estilos del juego «Bolsa de valores». Todo cuelga de .bolsa (la pantalla) para no tocar nada del resto de la web. */
+/* Estilos del juego «Bolsa de valores» (precios reales, dinero ficticio). Todo cuelga de .bolsa (la pantalla) para no tocar nada del resto de la web. */
 
 /* Verde y rojo con contraste suficiente sobre el fondo de cada tema (siempre van con signo, flecha y texto, no solo color). */
 .bolsa { --up: #166534; --down: #b91c1c; display: grid; gap: 14px; min-width: 0; }
@@ -6,10 +6,12 @@
 :root[data-theme="dark"] .bolsa { --up: #4ade80; --down: #f87171; }
 
 /* ---------- entrar y cabecera ---------- */
-.bolsa-join { display: grid; justify-items: center; gap: 10px; padding: 26px 20px; text-align: center; border-radius: 26px; background: var(--surface); border: 1px solid var(--line); box-shadow: var(--shadow); }
-.bolsa-join h2 { font-size: 1.5rem; letter-spacing: -0.025em; }
-.bolsa-join p { max-width: 38ch; color: var(--muted); }
+.bolsa-join, .bolsa-nofeed { display: grid; justify-items: center; gap: 10px; padding: 26px 20px; text-align: center; border-radius: 26px; background: var(--surface); border: 1px solid var(--line); box-shadow: var(--shadow); }
+.bolsa-join h2, .bolsa-nofeed h2 { font-size: 1.5rem; letter-spacing: -0.025em; }
+.bolsa-join > p, .bolsa-nofeed > p { max-width: 38ch; color: var(--muted); }
 .bolsa-join p strong { color: var(--text); }
+.bolsa-nofeed-art { width: 64px; height: 64px; border-radius: 22px; display: grid; place-items: center; font-size: 2rem; background: var(--accent-soft); }
+.bolsa-nofeed .bolsa-admin { width: 100%; text-align: left; background: var(--surface-2); }
 .bolsa-join-art { width: 76px; height: 76px; border-radius: 26px; display: grid; place-items: center; font-size: 2.3rem; background: var(--grad); box-shadow: 0 12px 30px var(--accent-glow); animation: float 3.2s ease-in-out infinite; }
 
 .bolsa-big { min-height: 52px; padding: 12px 26px; font-size: 1.05rem; }
@@ -201,3 +203,23 @@
 @media (min-width: 1000px) {
   .bolsa-hero-stats { max-width: 520px; }
 }
+
+/* ---------- precios reales: estado de cada activo y administración ---------- */
+.bolsa-st { display: inline-block; flex: none; width: 8px; height: 8px; margin-right: 5px; border-radius: 50%; vertical-align: 1px; background: var(--muted); }
+.bolsa-st.is-live { background: var(--up); box-shadow: 0 0 0 3px color-mix(in srgb, var(--up) 22%, transparent); }
+.bolsa-st.is-stale, .bolsa-st.is-none { background: #d97706; }
+.bolsa-feedbar { display: flex; align-items: flex-start; margin: 0 0 4px; font-size: 0.9rem; line-height: 1.5; }
+.bolsa-feedbar .bolsa-st { margin-top: 7px; }
+.bolsa-asset.is-closed .bolsa-px, .bolsa-asset.is-stale .bolsa-px, .bolsa-asset.is-none .bolsa-px { color: var(--muted); }
+.bolsa-livebar { display: flex; align-items: flex-start; gap: 0; margin: -6px 0 0; font-size: 0.82rem; line-height: 1.45; color: var(--muted); overflow-wrap: anywhere; }
+.bolsa-livebar .bolsa-st { margin-top: 5px; }
+.bolsa-reason { margin: 0; padding: 11px 13px; border-radius: 14px; font-size: 0.9rem; line-height: 1.5; background: color-mix(in srgb, #f59e0b 16%, var(--surface)); border: 1px solid color-mix(in srgb, #f59e0b 40%, var(--line)); overflow-wrap: anywhere; }
+.bolsa-chart-note { margin: 2px 0 0; font-size: 0.8rem; }
+.bolsa-admin-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.bolsa-admin-actions .btn { min-height: 44px; }
+.bolsa-feedadmin { width: 100%; margin-bottom: 10px; }
+.bolsa-status { display: grid; gap: 6px; width: 100%; min-width: 0; }
+.bolsa-status p { margin: 0; overflow-wrap: anywhere; }
+.bolsa-feedlist { display: grid; gap: 3px; margin: 2px 0 0; padding: 0; list-style: none; font-size: 0.82rem; line-height: 1.4; }
+.bolsa-feedlist li { overflow-wrap: anywhere; }
+.bolsa-feedlist i { color: var(--down); font-style: normal; }

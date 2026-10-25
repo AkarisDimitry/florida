@@ -1,0 +1,24 @@
+/* Aviso de actividades sin ubicación (hoja del mapa) y diálogo para ubicarlas de golpe. */
+.locate-hint {
+  display: flex; align-items: center; gap: 8px; width: 100%; margin: 6px 0 0; padding: 9px 12px; min-height: 40px; border-radius: 14px;
+  border: 1px solid #fcd34d; background: #fef3c7; color: #92400e; font: inherit; font-size: 0.82rem; font-weight: 600; text-align: left; cursor: pointer;
+}
+.locate-hint span { flex: 1; min-width: 0; }
+.locate-hint b { white-space: nowrap; color: #78350f; text-decoration: underline; }
+.locate-hint:active { transform: scale(0.99); }
+#locate-dialog { width: min(520px, calc(100vw - 24px)); }
+.locate-list { list-style: none; margin: 8px 0; padding: 0; display: grid; gap: 8px; max-height: 52vh; overflow: auto; }
+.locate-list li { display: grid; gap: 4px; padding: 10px 12px; border-radius: 14px; background: var(--surface-2); border: 1px solid var(--line); min-width: 0; }
+.locate-list li.is-empty { opacity: 0.8; }
+.locate-list small { display: block; color: var(--muted); font-size: 0.78rem; overflow-wrap: anywhere; }
+.locate-pick { display: flex; align-items: flex-start; gap: 10px; min-height: 40px; cursor: pointer; }
+.locate-pick input { flex: none; width: 22px; height: 22px; margin-top: 2px; }
+.locate-pick span { min-width: 0; font-weight: 600; overflow-wrap: anywhere; }
+.locate-pick svg { display: inline; vertical-align: -2px; }
+.locate-list select { width: 100%; min-height: 40px; max-width: 100%; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .locate-hint { background: #422006; border-color: #854d0e; color: #fde68a; }
+  :root:not([data-theme="light"]) .locate-hint b { color: #fef3c7; }
+}
+:root[data-theme="dark"] .locate-hint { background: #422006; border-color: #854d0e; color: #fde68a; }
+:root[data-theme="dark"] .locate-hint b { color: #fef3c7; }

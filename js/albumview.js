@@ -7,6 +7,7 @@ import { directionsUrl } from "./geo.js";
 import { gate, weatherChip } from "./views.js";
 import { nearbyWiki } from "./places.js";
 import { hueOf } from "./ledger.js";
+import { categoryBars, categoryPeopleHtml } from "./categorias.js";
 import { state } from "./state.js";
 import { clock } from "./media.js";
 
@@ -104,6 +105,18 @@ function ledgerBlock(album) {
     <ul class="people">${l.rows
       .map((r) => `<li class="person">${dot(r.name)}<div class="person-body"><strong>${esc(r.name)}</strong><p>Pagó ${esc(money.format(r.paid))} · le tocan ${esc(money.format(r.owed))}</p></div><span class="balance ${r.balance > 0.004 ? "is-plus" : r.balance < -0.004 ? "is-minus" : ""}">${r.balance > 0.004 ? "+" : r.balance < -0.004 ? "−" : ""}${esc(money.format(Math.abs(r.balance)))}</span></li>`)
       .join("")}</ul>
+  </section>`;
+}
+
+// «Gastos por categoría»: en qué se ha ido el dinero repartido (nafta, comida, salidas…) y, por persona, lo que le toca a cada uno.
+function categoriesBlock(album) {
+  const c = album.categories;
+  if (!c || !c.total) return "";
+  return `<section class="album-sec"><h3>Gastos por categoría</h3>
+    <p class="album-total"><strong>${esc(money.format(c.total / 100))}</strong><span>en ${plural(c.count, "apunte repartido", "apuntes repartidos")}</span></p>
+    ${categoryBars(c)}
+    ${c.owed.rows.length > 1 ? `<h4>Lo que le toca a cada uno</h4>${categoryPeopleHtml(c.owed)}` : ""}
+    ${c.guessed ? `<p class="hint">${plural(c.guessed, "apunte", "apuntes")} sin categoría guardada: se ${c.guessed === 1 ? "calcula" : "calculan"} por las palabras del concepto.</p>` : ""}
   </section>`;
 }
 
@@ -252,6 +265,7 @@ export function renderAlbum() {
     ${overview}
     ${album.chapters.map(chapter).join("")}
     ${expenses(album)}
+    ${categoriesBlock(album)}
     ${ledgerBlock(album)}
     ${foodBlock(album)}
     ${gamesBlock(album)}

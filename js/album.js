@@ -7,6 +7,7 @@ import { describeWeather } from "./weather.js";
 import { allDays, byTime, locatedStops, currentRoutes, photoTime } from "./trip.js";
 import { distanceKm } from "./geo.js";
 import { balances, settlements, totalCents, fromCents, shares, people, isValid } from "./ledger.js";
+import { categorySummary } from "./categorias.js";
 import { gameSummaries } from "./juegos/index.js";
 
 const NEAR_KM = 0.35; // una foto con GPS se asocia a un lugar si se hizo a menos de 350 m
@@ -267,6 +268,7 @@ export function buildAlbum() {
     games: gameSummaries(),
     orphans,
     ledger,
+    categories: state.expenses.some(isValid) ? categorySummary() : null, // gastos por categoría y por persona (céntimos)
     awards: buildAwards({ photos, chapters, stops, byActivity, highlights, ledger }),
     expenses,
     food,

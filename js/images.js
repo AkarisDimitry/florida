@@ -3,18 +3,26 @@
 //   2. genera una versión grande y una miniatura, ambas JPEG
 // La imagen que se sube pasa por <canvas>, así que NO conserva los metadatos: la ubicación solo
 // queda guardada como coordenadas en la base de datos, visible únicamente para los viajeros.
+import { decodePhoto } from "./formatos.js";
+
 const EXIFR = "https://cdn.jsdelivr.net/npm/exifr@7.1.3/dist/lite.esm.mjs";
 const FULL_SIDE = 1600;
 const THUMB_SIDE = 400;
 
-export async function prepareImage(file) {
+// Acepta JPEG, PNG, WebP, GIF, BMP, AVIF y HEIC/HEIF (ver formatos.js) y lo deja todo en JPEG. Los metadatos se leen del archivo
+// ORIGINAL, antes de convertirlo (al pasar por <canvas> o por el conversor de HEIC se pierden).
+export async function prepareImage(file, { onConvert } = {}) {
   const meta = await readMetadata(file);
-  const img = await loadImage(file);
-  return {
-    full: await scale(img, FULL_SIDE, 0.82),
-    thumb: await scale(img, THUMB_SIDE, 0.7),
-    ...meta,
-  };
+  const img = await decodePhoto(file, { onConvert });
+  try {
+    return {
+      full: await scale(img, FULL_SIDE, 0.82),
+      thumb: await scale(img, THUMB_SIDE, 0.7),
+      ...meta,
+    };
+  } finally {
+    img.close?.(); // ImageBitmap
+  }
 }
 
 // Devuelve { lat, lng, taken_at } con lo que haya; nunca falla (una foto sin metadatos es normal).
@@ -49,27 +57,13 @@ export async function readMetadata(file) {
   return meta;
 }
 
-function loadImage(file) {
-  return new Promise((resolve, reject) => {
-    const url = URL.createObjectURL(file);
-    const img = new Image();
-    img.onload = () => {
-      URL.revokeObjectURL(url);
-      resolve(img);
-    };
-    img.onerror = () => {
-      URL.revokeObjectURL(url);
-      reject(new Error(`No se pudo leer «${file.name}». ¿Es una imagen JPG, PNG o WebP?`));
-    };
-    img.src = url;
-  });
-}
-
 function scale(img, maxSide, quality) {
-  const ratio = Math.min(1, maxSide / Math.max(img.naturalWidth, img.naturalHeight));
+  const width = img.naturalWidth || img.width; // <img> o ImageBitmap
+  const height = img.naturalHeight || img.height;
+  const ratio = Math.min(1, maxSide / Math.max(width, height));
   const canvas = document.createElement("canvas");
-  canvas.width = Math.round(img.naturalWidth * ratio);
-  canvas.height = Math.round(img.naturalHeight * ratio);
+  canvas.width = Math.max(1, Math.round(width * ratio));
+  canvas.height = Math.max(1, Math.round(height * ratio));
   const ctx = canvas.getContext("2d");
   ctx.fillStyle = "#fff"; // los PNG con transparencia no deben quedar negros en JPEG
   ctx.fillRect(0, 0, canvas.width, canvas.height);

@@ -8,6 +8,9 @@ import { people, canonical, cents, fromCents } from "./ledger.js";
 import { requireName } from "./dialogs.js";
 import { prepareImage } from "./images.js";
 import { pickFiles } from "./media.js";
+import { orderedPresets, presetFor, bumpPreset, QUICK_AMOUNTS, quickLabel } from "./gastopresets.js";
+import { categoryPickerHtml, guessCategory, newColumnsError, isCategory, categoryColumnMissing } from "./categorias.js";
+import { startLocation, locationFields, initLocationRow, suggestPlace } from "./gastoloc.js";
 
 const dialog = $("#expense-dialog");
 const form = $("#expense-form");
@@ -17,6 +20,11 @@ let activityId = null;
 let saving = false; // evita guardar dos veces el mismo gasto con un doble toque
 let kind = "gasto"; // "gasto" o "compra"
 let ticket = null; // foto del ticket elegida { file, url }
+
+let catChoice = ""; // categoría elegida (clave) o "" = sin categoría (se calcula por las palabras del concepto)
+let catSource = ""; // "preset" si la puso un atajo, "user" si la tocó la persona
+let catSig = "";
+let presetOrder = []; // los atajos del tipo actual, de más a menos usados (se calcula al abrir y al cambiar de tipo)
 
 const chip = (type, name, value, checked) =>
   `<label class="pick"><input type="${type}" name="${name}" value="${esc(value)}" ${checked ? "checked" : ""}><span>${esc(value)}</span></label>`;
@@ -43,26 +51,68 @@ function preview() {
   hint.textContent = `A partes iguales: ${money.format(fromCents(base))} cada uno${rest ? ` (${rest} ${rest === 1 ? "persona paga" : "personas pagan"} 1 céntimo más)` : ""}.`;
 }
 
-// Cambia entre gasto y compra: el título, el campo de tienda y el ticket solo salen en las compras.
+// Los atajos del tipo actual (los más usados primero); el que coincide con lo escrito sale marcado. Cada uno fija concepto y categoría.
+function renderPresets() {
+  const typed = form.elements.title.value.trim().toLowerCase();
+  $("#expense-presets").innerHTML = presetOrder
+    .map(([emoji, label]) => `<button type="button" class="preset" data-preset="${esc(label)}" aria-pressed="${typed === label.toLowerCase()}"><span aria-hidden="true">${emoji}</span> ${esc(label)}</button>`)
+    .join("");
+}
+
+// Fila «Categoría»: las ocho y «Sin categoría». Mientras no se elija ninguna, la que se calcula por el concepto sale sugerida.
+function renderCategory({ reveal = false } = {}) {
+  const suggestion = guessCategory(form.elements.title.value, kind === "compra" ? form.elements.place.value : "");
+  const sig = `${catChoice}|${suggestion}`;
+  const box = $("#expense-cat");
+  if (sig === catSig && !reveal && box.firstChild) return;
+  catSig = sig;
+  const scroll = box.querySelector(".cat-chips")?.scrollLeft ?? 0;
+  box.innerHTML = categoryPickerHtml({ choice: catChoice, suggestion });
+  const row = box.querySelector(".cat-chips");
+  if (!row) return;
+  row.scrollLeft = scroll;
+  const on = reveal && row.querySelector('[aria-pressed="true"]:not(.is-none)');
+  if (on) row.scrollLeft = Math.max(0, on.offsetLeft - (row.clientWidth - on.offsetWidth) / 2); // la elegida a la vista, sin mover el diálogo
+}
+
+// Importes rápidos: un toque rellena la cantidad; «Otro» lleva el cursor al campo.
+function renderQuick() {
+  $("#expense-quick").innerHTML = `${QUICK_AMOUNTS.map((n) => `<button type="button" class="quick" data-amount="${n}" aria-pressed="false">${esc(quickLabel(n))}</button>`).join("")}<button type="button" class="quick" data-amount="other" aria-pressed="false">Otro</button>`;
+  syncQuick();
+}
+function syncQuick() {
+  const value = form.elements.amount.value.trim();
+  const current = Number(value);
+  for (const button of $("#expense-quick").querySelectorAll("button")) {
+    const other = button.dataset.amount === "other";
+    button.setAttribute("aria-pressed", String(other ? value !== "" && current > 0 && !QUICK_AMOUNTS.includes(current) : current === Number(button.dataset.amount)));
+  }
+}
+
+// Cambia entre gasto y compra: el campo de tienda solo sale en las compras; la foto del ticket, en las dos.
 function setKind(next) {
   kind = next;
+  presetOrder = orderedPresets(kind);
+  renderPresets();
+  renderCategory();
   for (const button of form.querySelectorAll("#expense-kind button")) button.setAttribute("aria-pressed", String(button.dataset.kind === kind));
   const purchase = kind === "compra";
-  $("#expense-heading").textContent = `${editingId ? "Editar" : "Nueva"} ${purchase ? "compra" : "gasto"}`;
+  $("#expense-heading").textContent = editingId ? `Editar ${purchase ? "compra" : "gasto"}` : purchase ? "Nueva compra" : "Nuevo gasto";
   $("#expense-title-label").textContent = purchase ? "¿Qué habéis comprado?" : "Concepto";
   form.elements.title.placeholder = purchase ? "Pan, fruta y agua" : "Cena en el puerto";
   $("#expense-place-field").hidden = !purchase;
   renderTicket();
+  if (purchase) suggestPlace(); // en una compra, la tienda se propone con el sitio donde se está
 }
 
-// Foto del ticket de una compra (opcional): se sube al guardar y queda enlazada a la compra.
+// Foto del ticket o recibo de un gasto o una compra (opcional): se sube al guardar y queda enlazada a ese apunte.
 function renderTicket() {
   const box = $("#expense-ticket");
-  box.hidden = !state.attach || kind !== "compra";
+  box.hidden = !state.attach;
   if (box.hidden) return;
   const saved = editingId ? state.photos.filter((p) => p.expense_id === editingId) : [];
-  box.innerHTML = `<legend>Foto del ticket (opcional)</legend>
-    ${saved.length || ticket ? `<div class="compose-previews">${saved.map((p) => `<span class="pv"><img src="${esc(p.thumb_url)}" alt="Ticket">${p.created_by === ctx.store?.user?.id || ctx.store?.mode === "demo" ? `<button type="button" class="mini-x" data-tk="del" data-id="${esc(p.id)}" aria-label="Borrar el ticket">✕</button>` : ""}</span>`).join("")}${ticket ? `<span class="pv is-new"><img src="${esc(ticket.url)}" alt="Ticket nuevo"><button type="button" class="mini-x" data-tk="clear" aria-label="Quitar la foto">✕</button></span>` : ""}</div>` : ""}
+  box.innerHTML = `<legend>Foto del ticket o recibo (opcional)</legend>
+    ${saved.length || ticket ? `<div class="compose-previews">${saved.map((p) => `<span class="pv"><a href="${esc(p.full_url)}" target="_blank" rel="noopener" aria-label="Ver el ticket en grande"><img src="${esc(p.thumb_url)}" alt="Ticket"></a>${p.created_by === ctx.store?.user?.id || ctx.store?.mode === "demo" ? `<button type="button" class="mini-x" data-tk="del" data-id="${esc(p.id)}" aria-label="Borrar el ticket">✕</button>` : ""}</span>`).join("")}${ticket ? `<span class="pv is-new"><img src="${esc(ticket.url)}" alt="Ticket nuevo"><button type="button" class="mini-x" data-tk="clear" aria-label="Quitar la foto">✕</button></span>` : ""}</div>` : ""}
     <div class="compose-bar"><button type="button" class="tool" data-tk="cam">${icon("camera", 17)}<span>Hacer foto</span></button><button type="button" class="tool" data-tk="gal">${icon("images", 17)}<span>Elegir foto</span></button></div>`;
 }
 
@@ -86,8 +136,14 @@ export function openExpense({ id, fromActivity, kind: wanted } = {}) {
   form.elements.amount.value = expense ? Number(expense.amount) : activity?.cost ?? "";
   form.elements.day.value = expense?.day ?? activity?.day ?? todayIso(); // un gasto se apunta el día en que se paga
   form.elements.place.value = expense?.place ?? "";
+  catChoice = isCategory(expense?.category) ? expense.category : "";
+  catSource = catChoice ? "user" : "";
+  catSig = "";
   setKind(expense ? expense.kind || "gasto" : wanted === "compra" ? "compra" : "gasto");
   renderPeople({ payer: expense ? canonical(expense.paid_by) : me, split: expense ? expense.split.map(canonical) : everyone });
+  renderCategory({ reveal: true });
+  renderQuick();
+  startLocation({ expense, activity }); // al apuntar uno nuevo se pide la posición (un gasto antiguo sin ubicación no la recibe solo)
   dialog.showModal();
   if (!expense && !activity) form.elements.title.focus();
 }
@@ -117,6 +173,41 @@ export function initExpenseDialog() {
     for (const input of form.querySelectorAll("[name=split]")) input.checked = true;
     preview();
   });
+  $("#expense-presets").addEventListener("click", (event) => {
+    const label = event.target.closest("[data-preset]")?.dataset.preset;
+    if (!label) return;
+    const preset = presetFor(kind, label);
+    form.elements.title.value = label;
+    if (preset) {
+      catChoice = preset[2]; // el atajo fija también la categoría
+      catSource = "preset";
+    }
+    renderPresets();
+    renderCategory({ reveal: true });
+    suggestPlace();
+    // Con el concepto puesto, lo que falta es el importe. En el móvil no se abre el teclado (taparía los importes rápidos y el botón
+    // de guardar): ahí se elige con un toque; con ratón, el cursor salta al campo.
+    if (!form.elements.amount.value && !matchMedia("(pointer: coarse)").matches) form.elements.amount.focus();
+  });
+  $("#expense-cat").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-cat-pick]");
+    if (!button) return;
+    catChoice = button.dataset.catPick;
+    catSource = "user";
+    renderCategory();
+  });
+  $("#expense-quick").addEventListener("click", (event) => {
+    const amount = event.target.closest("[data-amount]")?.dataset.amount;
+    if (!amount) return;
+    if (amount === "other") {
+      form.elements.amount.focus();
+      form.elements.amount.select();
+      return;
+    }
+    form.elements.amount.value = amount;
+    preview();
+    syncQuick();
+  });
   $("#expense-kind").addEventListener("click", (event) => {
     const button = event.target.closest("[data-kind]");
     if (button) setKind(button.dataset.kind);
@@ -140,7 +231,21 @@ export function initExpenseDialog() {
     }
     renderTicket();
   });
-  form.addEventListener("input", preview);
+  form.elements.title.addEventListener("input", () => {
+    // Si la categoría venía de un atajo y se escribe otro concepto, ya no vale: se vuelve a calcular por las palabras.
+    if (catSource === "preset" && presetFor(kind, form.elements.title.value)?.[2] !== catChoice) {
+      catChoice = "";
+      catSource = "";
+    }
+    renderPresets();
+    renderCategory();
+  });
+  form.elements.place.addEventListener("input", () => renderCategory());
+  form.addEventListener("input", () => {
+    preview();
+    syncQuick();
+  });
+  initLocationRow({ formEl: form, dialogEl: dialog, getKind: () => kind });
   form.addEventListener("change", preview);
 
   form.addEventListener(
@@ -165,6 +270,14 @@ export function initExpenseDialog() {
       // Al pasar de compra a gasto la tienda se borra; en una compra se guarda lo escrito (o se vacía si se borró).
       const hadPlace = state.expenses.find((e) => e.id === editingId)?.place;
       if (kind === "compra" ? place || hadPlace : hadPlace) expense.place = kind === "compra" ? place || null : null;
+      // La categoría y la ubicación (lat, lng) solo se envían si hay algo que guardar o quitar: así un gasto sigue guardándose
+      // aunque en Supabase aún no esté categorias.sql.
+      const previous = state.expenses.find((e) => e.id === editingId);
+      if (!categoryColumnMissing()) {
+        if (catChoice) expense.category = catChoice;
+        else if (previous?.category) expense.category = null; // eligió «Sin categoría» en uno que la tenía: se calcula por el concepto
+      }
+      Object.assign(expense, locationFields());
       if (editingId) expense.id = editingId;
       saving = true;
       try {
@@ -172,13 +285,24 @@ export function initExpenseDialog() {
         try {
           id = await ctx.store.saveExpense(expense);
         } catch (err) {
-          throw schemaHint(err);
+          const extra = ["category", "lat", "lng"].filter((k) => k in expense);
+          if (!extra.length || !newColumnsError(err)) throw schemaHint(err);
+          // Falta categorias.sql: se guarda igual, sin esas columnas, y se avisa de qué falta.
+          const plain = { ...expense };
+          for (const k of extra) delete plain[k];
+          try {
+            id = await ctx.store.saveExpense(plain);
+          } catch (err2) {
+            throw schemaHint(err2);
+          }
+          toast(`Se guardó, pero sin ${["category", "lat"].filter((k) => k in expense).map((k) => (k === "category" ? "la categoría" : "la ubicación")).join(" ni ")}: falta ejecutar supabase/todo_en_uno.sql en Supabase (no hace daño repetirlo).`, 9000);
         }
-        if (ticket && kind === "compra") {
+        bumpPreset(kind, title); // los atajos más usados salen primero la próxima vez
+        if (ticket) {
           try {
             await ctx.store.addPhoto({ ...(await prepareImage(ticket.file)), expense_id: id });
           } catch (err) {
-            toast(`La compra se guardó, pero el ticket no se pudo subir: ${schemaHint(err).message}`, 8000);
+            toast(`Se guardó, pero la foto del ticket no se pudo subir: ${schemaHint(err).message}`, 8000);
           }
         }
         dialog.close();
@@ -192,7 +316,7 @@ export function initExpenseDialog() {
     "click",
     guarded(async () => {
       if (!editingId || !confirm("¿Borrar este gasto? El reparto se recalculará.")) return;
-      const tickets = state.photos.filter((p) => p.expense_id === editingId); // la foto del ticket no tiene sentido sin la compra
+      const tickets = state.photos.filter((p) => p.expense_id === editingId); // la foto del ticket no tiene sentido sin el apunte
       await ctx.store.deleteExpense(editingId);
       for (const photo of tickets) await ctx.store.deletePhoto(photo).catch((err) => console.error(err));
       dialog.close();

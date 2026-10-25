@@ -1,0 +1,126 @@
+/* Avisos: campana, alerta resaltada, panel «Novedades», Ajustes → Avisos y la tarjeta para activarlos (js/avisos.js). */
+
+/* ---------- campana de la cabecera ---------- */
+.bell-btn { position: relative; flex: none; width: 42px; height: 42px; }
+.bell-count {
+  position: absolute; top: 1px; right: -3px; min-width: 18px; height: 18px; padding: 0 4px; border-radius: 999px;
+  display: grid; place-items: center; font-size: 0.66rem; font-weight: 800; line-height: 1;
+  background: #dc2626; color: #fff; border: 2px solid var(--bg); box-sizing: content-box;
+}
+.bell-btn.has-unread .ico { animation: bell-ring 2.8s ease-in-out infinite; transform-origin: 50% 12%; }
+@keyframes bell-ring { 0%, 88%, 100% { transform: none; } 90% { transform: rotate(14deg); } 93% { transform: rotate(-12deg); } 96% { transform: rotate(8deg); } }
+:root[data-motion="off"] .bell-btn.has-unread .ico { animation: none; }
+@media (prefers-reduced-motion: reduce) { .bell-btn.has-unread .ico { animation: none; } }
+
+/* ---------- alerta resaltada ---------- */
+/* Es un «popover»: se pinta en la capa superior, por encima de cualquier diálogo abierto. Sin popover, una capa fija normal. */
+.aviso-stack {
+  position: fixed; inset: calc(var(--appbar-h) + var(--safe-t) + 8px) 8px auto 8px; margin: 0 auto; width: auto; max-width: 560px; height: auto;
+  max-height: none; padding: 0; border: 0; overflow: visible; background: none; color: inherit; z-index: 120;
+  display: none; gap: 8px;
+}
+.aviso-stack:popover-open, .aviso-stack.no-popover:not(.is-empty) { display: grid; }
+.aviso-alert {
+  position: relative; display: flex; align-items: stretch; border-radius: 22px; overflow: hidden;
+  background: var(--grad); color: var(--accent-ink); box-shadow: 0 14px 38px rgb(0 0 0 / 0.34), 0 0 0 3px color-mix(in srgb, var(--accent) 55%, transparent);
+  animation: aviso-in 0.5s var(--spring);
+}
+.aviso-alert.is-leaving { opacity: 0; transform: translateY(-14px) scale(0.97); transition: opacity 0.2s, transform 0.2s; }
+.aviso-alert.is-urgent {
+  background: linear-gradient(135deg, #b91c1c, #ea580c); color: #fff; min-height: 84px;
+  box-shadow: 0 16px 44px rgb(185 28 28 / 0.55), 0 0 0 4px #fecaca; animation: aviso-in 0.5s var(--spring), aviso-pulse 1.6s ease-in-out 0.5s infinite;
+}
+@keyframes aviso-in { from { opacity: 0; transform: translateY(-22px) scale(0.94); } to { opacity: 1; transform: none; } }
+@keyframes aviso-pulse { 0%, 100% { box-shadow: 0 16px 44px rgb(185 28 28 / 0.55), 0 0 0 4px #fecaca; } 50% { box-shadow: 0 16px 44px rgb(185 28 28 / 0.75), 0 0 0 9px rgb(254 202 202 / 0.55); } }
+:root[data-motion="off"] .aviso-alert, :root[data-motion="off"] .aviso-alert.is-urgent { animation: none; }
+@media (prefers-reduced-motion: reduce) { .aviso-alert, .aviso-alert.is-urgent { animation: none; } }
+.aviso-main {
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: 12px; padding: 12px 6px 12px 14px; min-height: 68px;
+  border: 0; background: none; color: inherit; text-align: left; cursor: pointer;
+}
+.aviso-emoji { flex: none; width: 48px; height: 48px; border-radius: 50%; display: grid; place-items: center; font-size: 1.7rem; background: rgb(255 255 255 / 0.22); }
+.aviso-text { flex: 1; min-width: 0; display: grid; gap: 1px; overflow-wrap: anywhere; }
+.aviso-text strong { font-size: 1rem; line-height: 1.25; }
+.aviso-text span { font-size: 0.88rem; opacity: 0.95; }
+.aviso-text small { font-size: 0.76rem; color: var(--muted); }
+.aviso-go { flex: none; padding: 9px 13px; border-radius: 999px; font-size: 0.85rem; font-weight: 800; background: #fff; color: #0f172a; white-space: nowrap; }
+.is-urgent .aviso-go { color: #b91c1c; }
+.aviso-x { flex: none; width: 46px; border: 0; background: rgb(0 0 0 / 0.16); color: inherit; cursor: pointer; display: grid; place-items: center; }
+
+/* alerta «sticky» (alerta de la familia): todo el ancho, rojo intenso, pulsando, con botones grandes */
+.aviso-alert.is-sticky {
+  flex-direction: column; margin-inline: -8px; border-radius: 0 0 24px 24px; background: linear-gradient(135deg, #7f1d1d, #dc2626 55%, #ea580c); color: #fff;
+  box-shadow: 0 18px 50px rgb(127 29 29 / 0.7), 0 0 0 5px #fecaca; animation: aviso-in 0.5s var(--spring), aviso-pulse-big 1.1s ease-in-out 0.5s infinite;
+}
+@keyframes aviso-pulse-big { 0%, 100% { box-shadow: 0 18px 50px rgb(127 29 29 / 0.7), 0 0 0 5px #fecaca; } 50% { box-shadow: 0 18px 50px rgb(220 38 38 / 0.9), 0 0 0 12px rgb(254 202 202 / 0.6); } }
+:root[data-motion="off"] .aviso-alert.is-sticky { animation: none; }
+@media (prefers-reduced-motion: reduce) { .aviso-alert.is-sticky { animation: none; } }
+.is-sticky .aviso-main { cursor: default; min-height: 84px; padding: 16px 14px 8px; }
+.is-sticky .aviso-emoji { width: 56px; height: 56px; font-size: 2rem; }
+.is-sticky .aviso-text strong { font-size: 1.15rem; }
+.aviso-actions { display: flex; gap: 10px; padding: 6px 14px 16px; }
+.aviso-btn { flex: 1; min-height: 52px; border: 2px solid rgb(255 255 255 / 0.7); border-radius: 999px; background: rgb(0 0 0 / 0.18); color: #fff; font-weight: 800; font-size: 1rem; cursor: pointer; }
+.aviso-btn.primary { background: #fff; color: #991b1b; border-color: #fff; }
+
+/* ---------- panel «Novedades» ---------- */
+.avisos-tools { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin: 6px 0 10px; }
+.avisos-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.aviso-item {
+  width: 100%; display: flex; align-items: center; gap: 12px; padding: 11px 12px; text-align: left; cursor: pointer; min-height: 60px;
+  border: 1px solid var(--line); border-radius: 16px; background: var(--surface-2); color: var(--text);
+}
+.aviso-item .aviso-emoji { width: 42px; height: 42px; font-size: 1.4rem; background: var(--accent-soft); }
+.aviso-item .aviso-text strong { font-size: 0.93rem; }
+.aviso-item .aviso-text span { color: var(--text); }
+.aviso-item.is-new { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+.aviso-item.is-urgent { border-left: 5px solid #dc2626; }
+.avisos-empty { padding: 18px 8px; text-align: center; color: var(--muted); font-size: 0.9rem; }
+@media (hover: hover) { .aviso-item:hover { background: var(--accent-soft); } }
+
+/* ---------- Ajustes → Avisos ---------- */
+#avisos-body { display: grid; gap: 8px; }
+.aviso-status { display: flex; align-items: center; gap: 9px; font-size: 0.95rem; }
+.aviso-dot { flex: none; width: 12px; height: 12px; border-radius: 50%; background: var(--muted); }
+.aviso-status.ok .aviso-dot { background: #16a34a; box-shadow: 0 0 0 4px rgb(22 163 74 / 0.2); }
+.aviso-status.warn .aviso-dot { background: #f59e0b; box-shadow: 0 0 0 4px rgb(245 158 11 / 0.2); }
+.aviso-status.bad .aviso-dot { background: #dc2626; box-shadow: 0 0 0 4px rgb(220 38 38 / 0.2); }
+.aviso-big { width: 100%; min-height: 52px; font-size: 1rem; }
+.aviso-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.aviso-row .btn { min-height: 44px; }
+.aviso-desc { display: block; font-size: 0.76rem; color: var(--muted); font-weight: 400; }
+.aviso-always { margin-top: 6px; padding: 10px 12px; border-radius: 14px; background: color-mix(in srgb, #dc2626 10%, var(--surface)); border: 1px solid color-mix(in srgb, #dc2626 35%, var(--line)); font-size: 0.86rem; }
+.aviso-sub { margin: 12px 0 2px; font-size: 0.78rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+.aviso-steps { margin: 4px 0 4px 20px; padding: 0; display: grid; gap: 6px; font-size: 0.9rem; }
+.aviso-checks { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; font-size: 0.88rem; }
+.aviso-admin { margin-top: 10px; padding: 12px; border: 1px solid var(--line); border-radius: 16px; background: var(--surface-2); display: grid; gap: 8px; }
+.aviso-admin .aviso-sub { margin-top: 0; }
+.aviso-admin code, .aviso-card code { padding: 1px 6px; border-radius: 6px; background: var(--surface); font-size: 0.82rem; }
+
+/* ---------- tarjeta «Activar avisos de la familia» ---------- */
+/* Va en el flujo de la página, justo debajo de la cabecera (nunca encima de nada): empuja hacia abajo el contenido. En el mapa, que está
+   fijo bajo la cabecera, js/avisos.js mide la tarjeta y le pasa su alto en --aviso-h para que el mapa empiece debajo. */
+.aviso-cta { position: relative; z-index: 3; margin: 10px 12px 0; display: grid; gap: 8px; }
+.aviso-cta[hidden] { display: none; }
+@media (min-width: 640px) { .aviso-cta { max-width: 560px; margin-inline: auto; } }
+body.has-aviso-cta .map-view { top: calc(var(--appbar-h) + var(--safe-t) + var(--aviso-h, 0px)); }
+.aviso-card {
+  display: grid; gap: 6px; padding: 12px 14px 14px; border-radius: 20px; background: var(--surface); color: var(--text);
+  border: 2px solid var(--accent); box-shadow: var(--shadow);
+}
+.aviso-card.is-admin { border-color: #f59e0b; }
+.aviso-card h2 { font-size: 1.02rem; letter-spacing: -0.01em; line-height: 1.25; }
+.aviso-card p { font-size: 0.86rem; color: var(--muted); }
+.aviso-card .aviso-row { flex-wrap: nowrap; }
+.aviso-card .aviso-big { flex: 1 1 auto; width: auto; min-height: 48px; }
+.aviso-card .btn { min-height: 46px; padding-inline: 14px; }
+.aviso-card .link-btn { min-height: 44px; }
+
+/* ---------- un sitio al que se llega desde un aviso ---------- */
+.aviso-flash { animation: aviso-flash 3s ease-out; }
+@keyframes aviso-flash { 0%, 40% { box-shadow: 0 0 0 4px var(--accent); } 100% { box-shadow: 0 0 0 0 transparent; } }
+
+@media (max-width: 380px) {
+  .aviso-main { gap: 9px; padding-left: 10px; }
+  .aviso-emoji { width: 42px; height: 42px; font-size: 1.45rem; }
+  .aviso-go { padding: 8px 10px; }
+}

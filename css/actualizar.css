@@ -1,0 +1,11 @@
+/* Aviso de versión nueva (js/actualizar.js). */
+.update-bar {
+  position: fixed; z-index: 70; left: 50%; transform: translateX(-50%); bottom: calc(var(--tabbar-h) + 30px + var(--safe-b));
+  width: min(440px, calc(100vw - 24px)); display: flex; align-items: center; gap: 10px; padding: 10px 12px 10px 16px; border-radius: 18px;
+  background: var(--accent); color: #fff; box-shadow: var(--shadow-lg); font-size: 0.92rem;
+}
+.update-bar strong { flex: 1; min-width: 0; }
+.update-go { min-height: 40px; padding: 0 16px; border: 0; border-radius: 999px; background: #fff; color: var(--accent); font: inherit; font-weight: 800; cursor: pointer; }
+.update-later { min-width: 40px; min-height: 40px; border: 0; background: none; color: #fff; font-size: 1rem; cursor: pointer; }
+@media (min-width: 1000px) { .update-bar { bottom: 24px; } }
+body.typing .update-bar { display: none; }
