@@ -31,7 +31,10 @@ export class IaError extends Error {
 
 // ---------- disponibilidad ----------
 
-export const iaAvailable = () => signedIn() && S.status?.configured === true && S.status?.tables !== false;
+// Apagada a propósito en config.js (`ia: { enabled: false }`): ni botones, ni tarjeta en Ajustes, ni consultas a la función.
+export const iaDisabled = () => config.ia?.enabled === false;
+
+export const iaAvailable = () => !iaDisabled() && signedIn() && S.status?.configured === true && S.status?.tables !== false;
 
 function applyAvailability() {
   document.documentElement.dataset.iaOk = iaAvailable() ? "on" : "";
@@ -39,7 +42,7 @@ function applyAvailability() {
 
 // ¿Está la función desplegada y con clave? Se pregunta una vez por sesión (y cada 10 minutos); con error de red, cada minuto.
 export function refreshStatus(force = false) {
-  if (!supabaseMode()) return Promise.resolve(null);
+  if (!supabaseMode() || iaDisabled()) return Promise.resolve(null);
   if (S.checking) return S.checking;
   const age = Date.now() - S.checkedAt;
   if (!force && S.status && S.status.deployed && age < 10 * 60_000) return Promise.resolve(S.status);
@@ -73,7 +76,7 @@ export function refreshStatus(force = false) {
 
 // Lo llama app.js en cada pintado: comprueba la IA cuando hay sesión de viajero y mantiene el interruptor del CSS.
 export function syncIa() {
-  if (signedIn()) refreshStatus();
+  if (!iaDisabled() && signedIn()) refreshStatus();
   applyAvailability();
 }
 
@@ -428,7 +431,7 @@ function memberHtml() {
 function paintSettings() {
   const sec = $("#ia-section");
   if (!sec) return;
-  if (!signedIn() || !S.status) {
+  if (iaDisabled() || !signedIn() || !S.status) {
     sec.hidden = true;
     return;
   }
@@ -447,7 +450,7 @@ function paintSettings() {
 
 // Lo llama dialogs.js al abrir Ajustes: vuelve a mirar el estado y carga el gasto de hoy.
 export async function iaSettingsOpen() {
-  if (!signedIn()) return;
+  if (iaDisabled() || !signedIn()) return;
   S.probe = null; // el resultado de una prueba anterior ya no vale
   await refreshStatus(true);
   paintSettings();

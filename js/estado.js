@@ -68,13 +68,17 @@ async function probe([, , table, column, , , fn]) {
   }
 }
 
+// Con la IA apagada en config.js (`ia: { enabled: false }`) sus partes no se comprueban ni se avisa de ellas.
+const activeParts = () => PARTS.filter((p) => !(config.ia?.enabled === false && (p[0] === "ia" || p[0] === "fn_ia")));
+
 export async function checkParts() {
   if (!sb() || S.running) return S.result;
   S.running = true;
   try {
-    const states = await Promise.all(PARTS.map(probe));
+    const parts = activeParts();
+    const states = await Promise.all(parts.map(probe));
     // Una sonda puede devolver [estado, qué hacer] para explicar mejor qué falta (p. ej. la clave de la IA).
-    S.result = PARTS.map((p, i) => {
+    S.result = parts.map((p, i) => {
       const [state, fix] = Array.isArray(states[i]) ? states[i] : [states[i], ""];
       return { id: p[0], label: p[1], gives: p[4], building: Boolean(p[5]), fix: fix || p[7] || "", code: fix ? "" : p[8] ?? "", state }; // con un texto propio (p. ej. «falta la clave») la función ya está desplegada: no se ofrece su código
     });

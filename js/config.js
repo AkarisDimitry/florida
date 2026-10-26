@@ -27,4 +27,9 @@ export const config = {
     url: "https://fpzwtgnsewjiywczoyfx.supabase.co",
     anonKey: "sb_publishable_kZOPev2MMba_F65RkandkQ_mB9TAAEs", // clave pública (publishable): es segura en el código
   },
+
+  // Ayudas de IA (✨): APAGADAS en esta web. Con `enabled: false` no sale ningún botón ✨, ni la tarjeta «IA» de Ajustes, ni avisos en el
+  // panel de estado, y no se pregunta nada a Supabase. Para usarlas: poner `true` (o borrar este bloque) y seguir «IA en la app» de
+  // docs/DESPLIEGUE.md (desplegar la función `ia` y guardar la clave en los Secrets de Supabase).
+  ia: { enabled: false },
 };
