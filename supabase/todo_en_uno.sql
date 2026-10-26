@@ -4017,6 +4017,103 @@ end
 $instalar$;
 
 -- ======================================================================
+-- chat_respuestas.sql  (se aplica solo si falta)
+-- ======================================================================
+do $instalar$
+begin
+  if to_regclass('public.chat_messages') is not null and not exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'chat_messages' and column_name = 'reply_to') then
+    raise notice 'Aplicando chat_respuestas.sql...';
+    execute $parte_chat_respuestas$
+-- Responder citando un mensaje del chat (arrastrar el mensaje hacia un lado, como en WhatsApp). Ejecutar en Supabase → SQL Editor
+-- DESPUÉS de chat.sql (añade una columna a public.chat_messages). Una sola vez; el todo en uno solo la aplica si falta la columna
+-- chat_messages.reply_to. Sin esta parte el chat funciona igual, solo que no se puede citar un mensaje.
+--
+-- Qué hay:
+--   · Un mensaje de texto puede llevar `reply_to`: el id del mensaje de texto al que contesta. La web enseña esa cita encima del mensaje
+--     (con quién lo escribió y las primeras palabras) y, al tocarla, lleva al original.
+--   · Si el original se borra, la respuesta se queda con la cita «Este mensaje fue eliminado» (a propósito no hay clave foránea: el
+--     `reply_to` sigue ahí y la web ve que ya no existe).
+--   · Aviso al autor: quien recibe una respuesta ve «↩️ Ana te respondió» (en vez del aviso general del chat, para no sonar dos veces);
+--     los demás reciben el aviso de siempre. Solo si avisos.sql está instalado; un fallo al avisar nunca impide guardar el mensaje.
+--
+-- Seguridad: solo se puede citar un mensaje de TEXTO que ya existe (no una alerta: sus destinatarios son privados), nunca el propio
+-- mensaje, y las alertas no llevan cita. El autor y la hora los sigue poniendo el servidor.
+
+-- ---------- 1. la columna ----------
+
+alter table public.chat_messages add column reply_to uuid;
+alter table public.chat_messages add constraint chat_messages_reply_check check (reply_to is null or (kind = 'texto' and reply_to <> id));
+create index chat_messages_reply_idx on public.chat_messages (reply_to) where reply_to is not null;
+
+-- ---------- 2. permisos y política ----------
+
+-- La web inserta con estas columnas (las de antes más reply_to).
+grant insert (reply_to) on public.chat_messages to authenticated;
+
+-- La misma política de antes, más: si cita algo, tiene que ser un mensaje de texto que existe (la subconsulta pasa por la política de
+-- lectura de chat_messages: los mensajes de texto los ve cualquier viajero).
+drop policy chat_messages_insert on public.chat_messages;
+create policy chat_messages_insert on public.chat_messages
+  for insert to authenticated
+  with check (
+    public.is_member() and user_id = auth.uid() and kind = 'texto' and to_users is null
+    and (attached_photo is null or exists (select 1 from public.photos p where p.id = attached_photo and p.created_by = auth.uid()))
+    and (attached_audio is null or exists (select 1 from public.audios a where a.id = attached_audio and a.created_by = auth.uid()))
+    -- (`chat_messages.reply_to` va calificado a propósito: dentro de la subconsulta, `reply_to` a secas sería la columna de `r`)
+    and (reply_to is null or exists (select 1 from public.chat_messages r where r.id = chat_messages.reply_to and r.kind = 'texto'))
+  );
+
+-- ---------- 3. aviso al autor del mensaje respondido ----------
+
+-- Sustituye al aviso de chat.sql: igual, pero si el mensaje responde a otra persona, a ella le llega «te respondió» y a las demás el aviso
+-- de siempre (así nadie recibe dos notificaciones por el mismo mensaje). Las ráfagas de un mismo autor se siguen agrupando 30 s.
+create or replace function public.chat_messages_notify()
+returns trigger
+language plpgsql security definer set search_path = public, pg_temp
+as $$
+declare
+  v_text text;
+  v_orig uuid;
+  v_others uuid[];
+begin
+  v_text := case
+    when new.body <> '' then left(new.body, 140)
+    when new.attached_photo is not null then '📷 Foto'
+    else '🎤 Nota de voz'
+  end;
+  begin
+    if to_regprocedure('public.push_notify(text,text,text,text,uuid,boolean,text,uuid[],text,boolean,text,integer)') is not null then
+      if new.reply_to is not null then
+        select m.user_id into v_orig from public.chat_messages m where m.id = new.reply_to;
+      end if;
+      if v_orig is not null and v_orig is distinct from new.user_id then
+        perform public.push_notify('chat', '↩️ ' || new.name || ' te respondió', v_text, '#chat', new.user_id, false, null, array[v_orig], 'respuesta-' || new.id::text, false, null, 0);
+        select coalesce(array_agg(u.id), '{}') into v_others
+          from auth.users u
+          join public.members mb on mb.email = lower(u.email)
+          where u.id <> v_orig and u.id is distinct from new.user_id;
+        if cardinality(v_others) > 0 then
+          perform public.push_notify('chat', '💬 ' || new.name, v_text, '#chat', new.user_id, false, null, v_others, 'chat', false, 'chat-' || coalesce(new.user_id::text, 'x'), 30);
+        end if;
+      else
+        perform public.push_notify('chat', '💬 ' || new.name, v_text, '#chat', new.user_id, false, null, null, 'chat', false, 'chat-' || coalesce(new.user_id::text, 'x'), 30);
+      end if;
+    end if;
+  exception when others then
+    raise warning 'chat_messages_notify: no se pudo avisar (%): %', sqlstate, sqlerrm;
+  end;
+  return new;
+end;
+$$;
+revoke all on function public.chat_messages_notify() from public, anon, authenticated;
+$parte_chat_respuestas$;
+  else
+    raise notice 'chat_respuestas.sql: ya estaba aplicado, se omite';
+  end if;
+end
+$instalar$;
+
+-- ======================================================================
 -- reacciones.sql  (se aplica solo si falta)
 -- ======================================================================
 do $instalar$
@@ -4404,6 +4501,537 @@ $batalla$;
 $parte_valoraciones$;
   else
     raise notice 'valoraciones.sql: ya estaba aplicado, se omite';
+  end if;
+end
+$instalar$;
+
+-- ======================================================================
+-- dibujos.sql  (se aplica solo si falta)
+-- ======================================================================
+do $instalar$
+begin
+  if to_regclass('public.drawings') is null then
+    raise notice 'Aplicando dibujos.sql...';
+    execute $parte_dibujos$
+-- Juego «Álbum de dibujos»: cada viajero dibuja con el dedo, guarda el dibujo en un álbum compartido y todos lo ven y reaccionan.
+-- Ejecutar en Supabase → SQL Editor DESPUÉS de schema.sql (usa public.is_member()), acceso.sql (usa is_admin()) y fotos.sql (el
+-- bucket privado `photos`). Una sola vez; el todo en uno solo lo aplica si falta public.drawings. Si reacciones.sql está instalado
+-- (va ANTES en el todo en uno), también se puede reaccionar a los dibujos; si no, esa parte se omite. No depende de avisos.sql: si
+-- está instalado, al guardar un dibujo se avisa a los demás (public.push_notify).
+--
+-- Los archivos van al bucket `photos` (JPEG, máx. 5 MB), en la carpeta del usuario, y NO se registran en public.photos: los dibujos
+-- no son fotos del viaje (no salen en Fotos, ni en el mapa, ni en el álbum de fotos). Las políticas de Storage de fotos.sql (solo la
+-- carpeta propia, solo JPEG, máx. 5 MB) ya permiten estas rutas y no se tocan aquí:
+--   <user_id>/dibujo-<id>.jpg      el dibujo (máx. 1200 px)
+--   <user_id>/dibujo-<id>_t.jpg    su miniatura (400 px)
+--
+-- Contenido:
+--   1. public.drawings   un dibujo por fila: autor, nombre, tema opcional y las dos rutas. Se insertan y se borran; nunca se editan.
+--   2. Disparadores      preparar la fila (hora del servidor, nombre y tema normalizados, límite por persona) y avisar a los demás.
+--   3. Reacciones        si existe public.reactions: admite target_kind 'drawing' (comprobación, aviso al autor y limpieza al borrar).
+--
+-- Seguridad: todo con RLS y permisos mínimos por columna; lo que no puede falsearse lo pone la base de datos.
+--   · Cada uno guarda solo como él mismo (user_id = auth.uid()) y borra solo lo suyo; un administrador puede borrar cualquiera
+--     (moderación). Nadie actualiza.
+--   · La hora (created_at) la pone el servidor y el nombre y el tema se normalizan en un disparador.
+--   · Las rutas de los archivos están atadas al propio usuario y al id del dibujo por una restricción, así nadie puede presentar
+--     como suyo un archivo subido por otra persona (ni apuntar a un archivo cualquiera del almacén).
+--   · Como mucho 300 dibujos por persona (el almacenamiento gratuito es de 1 GB): al llegar al límite avisa en español.
+--
+-- Nota: borrar un dibujo ajeno como administrador quita la fila, pero los archivos solo los puede borrar su dueño (política de
+-- Storage): quedan sin enlazar y ocupan unos 100-200 KB. Borrar un usuario borra sus filas, no sus archivos.
+-- Tiempo real: drawings va en supabase_realtime (las reacciones ya van en la suya).
+
+-- ---------- 1. los dibujos ----------
+
+create table public.drawings (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null default auth.uid() references auth.users (id) on delete cascade,
+  name text not null,                                          -- nombre de quien dibuja (lo normaliza el disparador)
+  prompt text,                                                 -- tema (opcional): «Un flamenco»; null = dibujo libre
+  path text not null,                                          -- el dibujo, versión grande
+  thumb_path text not null,                                    -- y su miniatura
+  created_at timestamptz not null default now(),               -- la fija el disparador: el cliente no la escribe
+  constraint drawings_name_check check (char_length(name) between 1 and 40),
+  constraint drawings_prompt_check check (prompt is null or char_length(prompt) between 1 and 80),
+  constraint drawings_paths_check check (
+    path = user_id::text || '/dibujo-' || id::text || '.jpg'
+    and thumb_path = user_id::text || '/dibujo-' || id::text || '_t.jpg'
+  )
+);
+create index drawings_created_idx on public.drawings (created_at desc);
+create index drawings_user_idx on public.drawings (user_id);
+
+-- ---------- permisos y RLS ----------
+
+-- Supabase concede por defecto todos los permisos sobre las tablas nuevas: se quitan y se dan solo los necesarios. `created_at` no
+-- está en la lista de INSERT (la pone el disparador) y UPDATE no se concede.
+revoke all on public.drawings from anon, authenticated;
+grant select, delete on public.drawings to authenticated;
+grant insert (id, user_id, name, prompt, path, thumb_path) on public.drawings to authenticated;
+alter table public.drawings enable row level security;
+
+-- Los viajeros ven los dibujos de todos (es parte de la gracia).
+create policy drawings_select on public.drawings
+  for select to authenticated using (public.is_member());
+-- Cada uno guarda solo como él mismo.
+create policy drawings_insert on public.drawings
+  for insert to authenticated with check (public.is_member() and user_id = auth.uid());
+-- Cada uno borra lo suyo; un administrador, cualquiera.
+create policy drawings_delete on public.drawings
+  for delete to authenticated using (public.is_member() and (user_id = auth.uid() or public.is_admin()));
+
+-- ---------- 2. disparadores ----------
+
+-- Antes de guardar: hora del servidor; nombre (espacios y saltos de línea repetidos pasan a uno, sin espacios en los extremos, máx.
+-- 40 caracteres; vacío = «Viajero») y tema (igual, máx. 80; vacío = sin tema) normalizados; y el límite de 300 dibujos por persona.
+-- El candado evita que dos guardados simultáneos de la misma persona se pasen del límite. Se ejecuta con los permisos del dueño
+-- para contar TODOS los dibujos de la persona, vea lo que vea su política.
+create or replace function public.drawings_prepare()
+returns trigger
+language plpgsql security definer set search_path = public, pg_temp
+as $$
+begin
+  new.created_at := now();
+  new.name := coalesce(nullif(btrim(left(btrim(regexp_replace(coalesce(new.name, ''), '[[:space:][:cntrl:]]+', ' ', 'g')), 40)), ''), 'Viajero');
+  new.prompt := nullif(btrim(left(btrim(regexp_replace(coalesce(new.prompt, ''), '[[:space:][:cntrl:]]+', ' ', 'g')), 80)), '');
+  perform pg_advisory_xact_lock(hashtextextended('drawings:' || coalesce(new.user_id::text, ''), 0));
+  if (select count(*) from public.drawings d where d.user_id = new.user_id) >= 300 then
+    raise exception 'Has llegado al máximo de 300 dibujos. Borra alguno del álbum para poder guardar otro' using errcode = '54000';
+  end if;
+  return new;
+end;
+$$;
+revoke all on function public.drawings_prepare() from public, anon, authenticated;
+create trigger drawings_prepare
+  before insert on public.drawings
+  for each row execute function public.drawings_prepare();
+
+-- Avisa a los demás de que hay un dibujo nuevo (si avisos.sql está instalado): a todos menos a quien lo hizo, con la miniatura, y las
+-- ráfagas de la misma persona se agrupan 2 minutos (cinco dibujos seguidos = un aviso). Un fallo al avisar nunca impide guardar.
+create or replace function public.drawings_notify()
+returns trigger
+language plpgsql security definer set search_path = public, pg_temp
+as $$
+begin
+  begin
+    if to_regprocedure('public.push_notify(text,text,text,text,uuid,boolean,text,uuid[],text,boolean,text,integer)') is not null then
+      perform public.push_notify('juego',
+        case when new.prompt is null then '🎨 ' || new.name || ' ha hecho un dibujo' else '🎨 ' || new.name || ' dibujó «' || new.prompt || '»' end,
+        'Toca para verlo', '#juegos', new.user_id, false, new.thumb_path, null, 'dibujo-' || new.id::text, false, 'dibujo-' || new.user_id::text, 120);
+    end if;
+  exception when others then
+    raise warning 'drawings_notify: no se pudo avisar (%): %', sqlstate, sqlerrm;
+  end;
+  return new;
+end;
+$$;
+revoke all on function public.drawings_notify() from public, anon, authenticated;
+create trigger drawings_notify
+  after insert on public.drawings
+  for each row execute function public.drawings_notify();
+
+-- ---------- tiempo real ----------
+
+alter publication supabase_realtime add table public.drawings;
+
+-- ---------- 3. reacciones a los dibujos (solo si reacciones.sql está instalado) ----------
+
+-- reactions.target_kind solo admitía 'comment', 'photo' y 'chat': se amplía con 'drawing'. Las funciones reactions_prepare y
+-- reactions_notify se sustituyen por la MISMA versión de reacciones.sql con una rama más (no se toca reacciones.sql, que ya está
+-- instalado en producción). Si instalas reacciones.sql DESPUÉS de este archivo, vuelve a ejecutar solo esta sección 3.
+do $reac$
+declare
+  c record;
+begin
+  if to_regclass('public.reactions') is null then
+    raise notice 'dibujos.sql: no está reacciones.sql, se omiten las reacciones a los dibujos';
+    return;
+  end if;
+
+  -- La comprobación de target_kind (se busca por lo que dice, no solo por el nombre) se vuelve a crear con 'drawing'.
+  for c in
+    select conname from pg_constraint
+    where conrelid = 'public.reactions'::regclass and contype = 'c' and pg_get_constraintdef(oid) like '%target_kind%'
+  loop
+    execute format('alter table public.reactions drop constraint %I', c.conname);
+  end loop;
+  alter table public.reactions
+    add constraint reactions_target_kind_check check (target_kind in ('comment', 'photo', 'chat', 'drawing'));
+
+  -- Antes de guardar una reacción: la cosa tiene que existir (rama nueva: el dibujo) y como mucho 6 emojis por persona y cosa.
+  create or replace function public.reactions_prepare()
+  returns trigger
+  language plpgsql security definer set search_path = public, pg_temp
+  as $f$
+  declare
+    v_ok boolean;
+  begin
+    new.created_at := now();
+    if auth.uid() is not null then
+      new.user_id := auth.uid();
+    end if;
+    new.name := coalesce(nullif(btrim(left(btrim(regexp_replace(coalesce(new.name, ''), '[[:space:][:cntrl:]]+', ' ', 'g')), 40)), ''), 'Viajero');
+
+    if new.target_kind = 'comment' then
+      select exists (select 1 from public.comments where id = new.target_id) into v_ok;
+    elsif new.target_kind = 'photo' then
+      select exists (select 1 from public.photos where id = new.target_id) into v_ok;
+    elsif new.target_kind = 'drawing' then
+      select exists (select 1 from public.drawings where id = new.target_id) into v_ok;
+    elsif new.target_kind = 'chat' and to_regclass('public.chat_messages') is not null then
+      -- Solo los mensajes de texto del chat (las alertas se confirman con «Entendido»).
+      execute 'select exists (select 1 from public.chat_messages where id = $1 and kind = ''texto'')' into v_ok using new.target_id;
+    else
+      v_ok := false;
+    end if;
+    if not coalesce(v_ok, false) then
+      raise exception 'Eso ya no existe: no se puede reaccionar' using errcode = 'foreign_key_violation';
+    end if;
+
+    if (select count(*) from public.reactions r where r.target_kind = new.target_kind and r.target_id = new.target_id and r.user_id = new.user_id) >= 6 then
+      raise exception 'Como mucho 6 reacciones distintas por persona. Quita alguna antes de añadir otra' using errcode = 'check_violation';
+    end if;
+    return new;
+  end;
+  $f$;
+
+  -- Avisa al autor de lo que ha recibido una reacción (rama nueva: «tu dibujo», categoría de juegos, a la pestaña Juegos).
+  create or replace function public.reactions_notify()
+  returns trigger
+  language plpgsql security definer set search_path = public, pg_temp
+  as $f$
+  declare
+    v_author uuid;
+    v_text text;
+    v_kind text;
+    v_url text;
+    v_what text;
+  begin
+    begin
+      if new.target_kind = 'comment' then
+        select created_by, left(nullif(body, ''), 80) into v_author, v_text from public.comments where id = new.target_id;
+        v_kind := 'comentario'; v_url := '#plan'; v_what := 'tu comentario';
+      elsif new.target_kind = 'photo' then
+        select created_by into v_author from public.photos where id = new.target_id;
+        v_kind := 'foto'; v_url := '#fotos'; v_what := 'tu foto';
+      elsif new.target_kind = 'drawing' then
+        select user_id, left(prompt, 80) into v_author, v_text from public.drawings where id = new.target_id;
+        v_kind := 'juego'; v_url := '#juegos'; v_what := 'tu dibujo';
+      elsif new.target_kind = 'chat' and to_regclass('public.chat_messages') is not null then
+        execute 'select user_id, left(nullif(body, ''''), 80) from public.chat_messages where id = $1' into v_author, v_text using new.target_id;
+        v_kind := 'chat'; v_url := '#chat'; v_what := 'tu mensaje';
+      end if;
+      if v_author is null or v_author = new.user_id then
+        return new;
+      end if;
+      if to_regprocedure('public.push_notify(text,text,text,text,uuid,boolean,text,uuid[],text,boolean,text,integer)') is not null then
+        perform public.push_notify(v_kind, new.emoji || ' ' || new.name || ' reaccionó a ' || v_what, coalesce(v_text, 'Toca para verlo'), v_url, new.user_id, false, null,
+          array[v_author], 'reaccion-' || new.target_id::text, false, 'reaccion-' || new.target_id::text || '-' || new.user_id::text, 60);
+      end if;
+    exception when others then
+      raise warning 'reactions_notify: no se pudo avisar (%): %', sqlstate, sqlerrm;
+    end;
+    return new;
+  end;
+  $f$;
+
+  -- Al borrar un dibujo se van sus reacciones (la tabla no tiene clave foránea porque apunta a varias tablas).
+  drop trigger if exists drawings_reactions_cleanup on public.drawings;
+  create trigger drawings_reactions_cleanup
+    after delete on public.drawings
+    for each row execute function public.reactions_cleanup('drawing');
+end
+$reac$;
+$parte_dibujos$;
+  else
+    raise notice 'dibujos.sql: ya estaba aplicado, se omite';
+  end if;
+end
+$instalar$;
+
+-- ======================================================================
+-- ia.sql  (se aplica solo si falta)
+-- ======================================================================
+do $instalar$
+begin
+  if to_regclass('public.ia_usage') is null then
+    raise notice 'Aplicando ia.sql...';
+    execute $parte_ia$
+-- Ayudas de IA (asistente del viaje, pie de foto, traducir, resumen del día, ideas para los juegos): CUPOS por persona y por día.
+-- Ejecutar en Supabase → SQL Editor DESPUÉS de schema.sql y acceso.sql (usa public.is_member(), public.is_admin(), public.members y
+-- auth.users). Una sola vez; el todo en uno solo la aplica si falta public.ia_usage. No depende de ninguna otra parte.
+--
+-- Esta parte NO llama a la IA: lo hace la Edge Function `ia` (supabase/functions/ia/index.ts), que guarda la clave de Anthropic en los
+-- «Secrets» de Supabase (nunca en la base de datos, el código ni la web). Aquí solo está lo que no debe poder falsear el navegador:
+-- quién es viajero y cuántas peticiones lleva cada persona hoy. El texto y las fotos que se mandan a la IA NO se guardan en ninguna tabla.
+--
+-- Contenido:
+--   1. public.ia_limits        límites por día, editables solo por administradores (ia_set_limits). Claves: `total` (por persona, todas las
+--                              ayudas juntas), `global` (todo el viaje) y una por ayuda (assistant, caption, translate, summary, ideas, describe).
+--   2. public.ia_usage         cuántas veces ha usado cada persona cada ayuda cada día. SIN ningún permiso para los clientes.
+--   3. Funciones para la Edge Function (solo service_role): ia_who, ia_take, ia_refund.
+--   4. Funciones para la web: ia_my_usage (mi gasto de hoy), ia_admin_status y ia_set_limits (solo administradores).
+--
+-- Cupos: ia_take(persona, ayuda) comprueba los tres límites (esa ayuda, el total de la persona y el global del viaje) y, si hay sitio,
+-- cuenta la petición, todo bajo un bloqueo (advisory lock) para que dos peticiones a la vez nunca se pasen del límite. Si la IA falla
+-- por su culpa (no por la de la persona) la Edge Function devuelve la petición con ia_refund. El día cambia a las 00:00 UTC (ia_today()).
+
+-- ---------- 1. límites ----------
+
+create table public.ia_limits (
+  kind text primary key check (kind in ('total', 'global', 'assistant', 'caption', 'translate', 'summary', 'ideas', 'describe')),
+  max_per_day integer not null check (max_per_day between 0 and 100000),
+  updated_at timestamptz not null default now(),
+  updated_by uuid references auth.users (id) on delete set null
+);
+
+-- Por defecto: 60 peticiones al día por persona (30 del asistente, 20 de pie de foto, 40 de traducir, 10 de resumen, 20 de ideas y 20
+-- de describir fotos) y 400 al día entre todos. 0 apaga esa ayuda.
+insert into public.ia_limits (kind, max_per_day) values
+  ('total', 60), ('global', 400), ('assistant', 30), ('caption', 20), ('translate', 40), ('summary', 10), ('ideas', 20), ('describe', 20)
+on conflict (kind) do nothing;
+
+revoke all on public.ia_limits from anon, authenticated;
+grant select on public.ia_limits to authenticated; -- nadie escribe directamente: lo hace ia_set_limits
+alter table public.ia_limits enable row level security;
+create policy ia_limits_select on public.ia_limits
+  for select to authenticated using (public.is_member());
+
+-- ---------- 2. uso ----------
+
+create table public.ia_usage (
+  user_id uuid not null references auth.users (id) on delete cascade,
+  day date not null,
+  kind text not null check (kind in ('assistant', 'caption', 'translate', 'summary', 'ideas', 'describe')),
+  count integer not null default 0 check (count >= 0),
+  updated_at timestamptz not null default now(),
+  primary key (user_id, day, kind)
+);
+create index ia_usage_day_idx on public.ia_usage (day);
+
+-- Ningún permiso ni política: ni los viajeros ni los administradores leen ni escriben aquí directamente (solo las funciones de abajo).
+revoke all on public.ia_usage from anon, authenticated;
+alter table public.ia_usage enable row level security;
+
+-- ---------- ayudas internas ----------
+
+-- El día de los cupos. Cambiar «UTC» por una zona (p. ej. 'America/New_York') hace que el día empiece a medianoche allí.
+create or replace function public.ia_today()
+returns date
+language sql stable
+as $$ select (now() at time zone 'UTC')::date $$;
+revoke all on function public.ia_today() from public, anon, authenticated;
+
+-- El límite vigente de una clave (si alguien borrara su fila, vale el de por defecto).
+create or replace function public.ia_limit_of(p_kind text)
+returns integer
+language sql stable security definer set search_path = public, pg_temp
+as $$
+  select coalesce(
+    (select max_per_day from public.ia_limits where kind = p_kind),
+    case p_kind when 'total' then 60 when 'global' then 400 when 'assistant' then 30 when 'caption' then 20 when 'translate' then 40
+                when 'summary' then 10 when 'ideas' then 20 when 'describe' then 20 else 0 end
+  );
+$$;
+revoke all on function public.ia_limit_of(text) from public, anon, authenticated;
+
+-- ---------- 3. funciones para la Edge Function (solo service_role) ----------
+
+-- ¿Este correo es viajero? ¿Y administrador? El correo sale del usuario que Supabase Auth acaba de validar, nunca de la petición.
+create or replace function public.ia_who(p_email text)
+returns jsonb
+language sql stable security definer set search_path = public, pg_temp
+as $$
+  select jsonb_build_object(
+    'member', exists (select 1 from public.members where email = lower(coalesce(p_email, ''))),
+    'admin', exists (select 1 from public.members where email = lower(coalesce(p_email, '')) and is_admin)
+  );
+$$;
+revoke all on function public.ia_who(text) from public, anon, authenticated;
+
+-- Cuenta una petición de esa persona si queda cupo. Devuelve { ok, reason, ... }: reason = 'kind' (esa ayuda), 'total' (todas las de la
+-- persona) o 'global' (todo el viaje) cuando no hay sitio; no cuenta nada en ese caso. Una a una (bloqueo): sin carreras.
+create or replace function public.ia_take(p_user uuid, p_kind text)
+returns jsonb
+language plpgsql security definer set search_path = public, pg_temp
+as $$
+declare
+  v_day date := public.ia_today();
+  v_kind_limit integer;
+  v_total_limit integer;
+  v_global_limit integer;
+  v_kind_used integer;
+  v_total_used integer;
+  v_global_used integer;
+  v_reason text;
+begin
+  if p_user is null then
+    raise exception 'Falta la persona';
+  end if;
+  if p_kind is null or p_kind not in ('assistant', 'caption', 'translate', 'summary', 'ideas', 'describe') then
+    raise exception 'Esa ayuda de IA no existe';
+  end if;
+  perform pg_advisory_xact_lock(727201);
+
+  delete from public.ia_usage where day < v_day - 90; -- historial de tres meses (para el gasto de la semana y el cálculo del coste)
+
+  v_kind_limit := public.ia_limit_of(p_kind);
+  v_total_limit := public.ia_limit_of('total');
+  v_global_limit := public.ia_limit_of('global');
+  select coalesce(sum(count) filter (where kind = p_kind), 0), coalesce(sum(count), 0)
+    into v_kind_used, v_total_used
+    from public.ia_usage where user_id = p_user and day = v_day;
+  select coalesce(sum(count), 0) into v_global_used from public.ia_usage where day = v_day;
+
+  if v_kind_used >= v_kind_limit then
+    v_reason := 'kind';
+  elsif v_total_used >= v_total_limit then
+    v_reason := 'total';
+  elsif v_global_used >= v_global_limit then
+    v_reason := 'global';
+  else
+    insert into public.ia_usage (user_id, day, kind, count) values (p_user, v_day, p_kind, 1)
+      on conflict (user_id, day, kind) do update set count = public.ia_usage.count + 1, updated_at = now();
+    v_kind_used := v_kind_used + 1;
+    v_total_used := v_total_used + 1;
+    v_global_used := v_global_used + 1;
+  end if;
+
+  return jsonb_build_object(
+    'ok', v_reason is null, 'reason', v_reason, 'kind', p_kind, 'day', v_day,
+    'kind_used', v_kind_used, 'kind_limit', v_kind_limit,
+    'total_used', v_total_used, 'total_limit', v_total_limit,
+    'global_used', v_global_used, 'global_limit', v_global_limit
+  );
+end;
+$$;
+revoke all on function public.ia_take(uuid, text) from public, anon, authenticated;
+
+-- Devuelve una petición que no se pudo atender por un fallo de la IA (la persona no tiene la culpa). No baja de cero.
+create or replace function public.ia_refund(p_user uuid, p_kind text)
+returns void
+language plpgsql security definer set search_path = public, pg_temp
+as $$
+begin
+  perform pg_advisory_xact_lock(727201);
+  update public.ia_usage set count = count - 1, updated_at = now()
+    where user_id = p_user and day = public.ia_today() and kind = p_kind and count > 0;
+end;
+$$;
+revoke all on function public.ia_refund(uuid, text) from public, anon, authenticated;
+
+-- ---------- 4. funciones para la web ----------
+
+-- Mi gasto de hoy: cuántas peticiones llevo de cada ayuda, mis límites y cuánto queda del cupo de todo el viaje.
+create or replace function public.ia_my_usage()
+returns jsonb
+language plpgsql stable security definer set search_path = public, pg_temp
+as $$
+declare
+  v_day date := public.ia_today();
+  v_global_used integer;
+begin
+  if auth.uid() is null or not public.is_member() then
+    raise exception 'No autorizado' using errcode = '42501';
+  end if;
+  select coalesce(sum(count), 0) into v_global_used from public.ia_usage where day = v_day;
+  return jsonb_build_object(
+    'day', v_day,
+    'used', (select coalesce(jsonb_object_agg(kind, count), '{}'::jsonb) from public.ia_usage where user_id = auth.uid() and day = v_day),
+    'total_used', (select coalesce(sum(count), 0) from public.ia_usage where user_id = auth.uid() and day = v_day),
+    'limits', (select coalesce(jsonb_object_agg(kind, max_per_day), '{}'::jsonb) from public.ia_limits),
+    'global_left', greatest(public.ia_limit_of('global') - v_global_used, 0)
+  );
+end;
+$$;
+revoke all on function public.ia_my_usage() from public, anon;
+grant execute on function public.ia_my_usage() to authenticated;
+
+-- Solo administradores: el gasto de hoy por persona, los límites vigentes y lo gastado en los últimos 7 días.
+create or replace function public.ia_admin_status()
+returns jsonb
+language plpgsql stable security definer set search_path = public, pg_temp
+as $$
+declare
+  v_day date := public.ia_today();
+begin
+  if auth.uid() is null or not public.is_admin() then
+    raise exception 'No autorizado' using errcode = '42501';
+  end if;
+  return jsonb_build_object(
+    'day', v_day,
+    'limits', (select coalesce(jsonb_object_agg(kind, max_per_day), '{}'::jsonb) from public.ia_limits),
+    'global_used', (select coalesce(sum(count), 0) from public.ia_usage where day = v_day),
+    'people', (
+      select coalesce(jsonb_agg(p order by (p ->> 'total')::int desc, p ->> 'email'), '[]'::jsonb)
+      from (
+        select jsonb_build_object('user_id', u.user_id, 'email', coalesce(a.email, ''), 'total', sum(u.count)::int, 'kinds', jsonb_object_agg(u.kind, u.count)) as p
+        from public.ia_usage u left join auth.users a on a.id = u.user_id
+        where u.day = v_day
+        group by u.user_id, a.email
+      ) s
+    ),
+    'days', (
+      select coalesce(jsonb_agg(d order by d ->> 'day' desc), '[]'::jsonb)
+      from (select jsonb_build_object('day', day, 'total', sum(count)::int) as d from public.ia_usage where day > v_day - 7 group by day) s
+    )
+  );
+end;
+$$;
+revoke all on function public.ia_admin_status() from public, anon;
+grant execute on function public.ia_admin_status() to authenticated;
+
+-- Solo administradores: cambiar uno o varios límites, p. ej. {"total": 40, "translate": 20}. 0 apaga esa ayuda. Devuelve todos los límites.
+create or replace function public.ia_set_limits(p_limits jsonb)
+returns jsonb
+language plpgsql security definer set search_path = public, pg_temp
+as $$
+declare
+  r record;
+begin
+  if auth.uid() is null or not public.is_admin() then
+    raise exception 'No autorizado' using errcode = '42501';
+  end if;
+  if p_limits is null or jsonb_typeof(p_limits) <> 'object' or p_limits = '{}'::jsonb then
+    raise exception 'Indica qué límites cambiar';
+  end if;
+  for r in select key, value from jsonb_each(p_limits) loop
+    if r.key not in ('total', 'global', 'assistant', 'caption', 'translate', 'summary', 'ideas', 'describe') then
+      raise exception 'Ese límite no existe: %', left(r.key, 40);
+    end if;
+    if jsonb_typeof(r.value) <> 'number' or (r.value #>> '{}') !~ '^[0-9]{1,6}$' or (r.value #>> '{}')::int > 100000 then
+      raise exception 'El límite de «%» tiene que ser un número entero entre 0 y 100000', r.key;
+    end if;
+  end loop;
+  perform pg_advisory_xact_lock(727201);
+  for r in select key, (value #>> '{}')::int as n from jsonb_each(p_limits) loop
+    insert into public.ia_limits (kind, max_per_day, updated_by) values (r.key, r.n, auth.uid())
+      on conflict (kind) do update set max_per_day = excluded.max_per_day, updated_at = now(), updated_by = auth.uid();
+  end loop;
+  return (select jsonb_object_agg(kind, max_per_day) from public.ia_limits);
+end;
+$$;
+revoke all on function public.ia_set_limits(jsonb) from public, anon;
+grant execute on function public.ia_set_limits(jsonb) to authenticated;
+
+-- ---------- service_role (la Edge Function) ----------
+
+-- En Supabase existe el rol service_role (la Edge Function lo usa); se le dan de forma explícita las tres funciones internas y la
+-- lectura de las tablas por si el proyecto no se las da por defecto. Si el rol no existe (una base sin Supabase) no se hace nada.
+do $$
+begin
+  if exists (select 1 from pg_roles where rolname = 'service_role') then
+    grant select, insert, update, delete on public.ia_limits, public.ia_usage to service_role;
+    grant execute on function public.ia_who(text) to service_role;
+    grant execute on function public.ia_take(uuid, text) to service_role;
+    grant execute on function public.ia_refund(uuid, text) to service_role;
+  end if;
+end
+$$;
+$parte_ia$;
+  else
+    raise notice 'ia.sql: ya estaba aplicado, se omite';
   end if;
 end
 $instalar$;

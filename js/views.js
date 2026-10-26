@@ -21,6 +21,8 @@ import { totalCents, fromCents } from "./ledger.js";
 import { mergeQueued, queuedTile, colaBand, isFresh } from "./cola.js";
 import { locateHintHtml } from "./ubicar.js";
 import { ratingBadgeHtml, topRatedHtml } from "./valoraciones.js";
+import { reactionBadgeHtml } from "./reacciones.js";
+import { iaDayButton, iaAssistantRow } from "./ia.js";
 
 const { trip } = config;
 
@@ -300,6 +302,7 @@ function renderDays() {
         <span class="day-dot"></span>
         <div class="day-title"><h2>${esc(capitalize(fmtDayLong.format(utc(day))))}</h2><p class="day-sub">${weatherChip(day)}<span>${esc(sub)}</span></p></div>
         <div class="day-tools">
+          ${iaDayButton(day)}
           ${items.length ? `<button class="icon-btn sm" title="Compartir el plan del día" aria-label="Compartir el plan del día" data-action="share-day" data-day="${esc(day)}">${icon("share", 17)}</button>` : ""}
           ${items.some(hasCoords) ? `<button class="icon-btn sm" title="Ver el día en el mapa" aria-label="Ver el día en el mapa" data-action="day-on-map" data-day="${esc(day)}">${icon("map", 18)}</button>` : ""}
           <button class="icon-btn sm accent" title="Añadir actividad" aria-label="Añadir actividad" data-action="add" data-day="${esc(day)}">${icon("plus", 18)}</button>
@@ -308,7 +311,7 @@ function renderDays() {
       ${items.length ? items.map((a) => card(a, commentsByActivity.get(a.id) ?? [], index++)).join("") : `<p class="empty">Sin planes todavía.</p>`}
     </section>`;
   });
-  return `<div class="plan-grid"><aside class="plan-aside">${colaBand()}${renderToday()}${renderIdeas()}${stats}</aside><div class="plan-main">${filters}${sections.join("")}</div></div>`;
+  return `<div class="plan-grid"><aside class="plan-aside">${colaBand()}${renderToday()}${iaAssistantRow()}${renderIdeas()}${stats}</aside><div class="plan-main">${filters}${sections.join("")}</div></div>`;
 }
 
 // ---------- fotos ----------
@@ -349,6 +352,7 @@ export function renderPhotos() {
             <img ${isFresh(p.id) ? 'class="loaded" ' : ""}src="${esc(k === 0 && g.items.length >= 4 ? p.full_url || p.thumb_url : p.thumb_url)}" alt="${esc(p.caption || "")}" loading="lazy" decoding="async" onload="this.classList.add('loaded')">
             ${hasCoords(p) ? `<span class="geo-badge" title="Con ubicación">${icon("pin", 13)}</span>` : ""}
             ${ratingBadgeHtml(p.id)}
+            ${reactionBadgeHtml("photo", p.id)}
           </button>`,
         )
         .join("");

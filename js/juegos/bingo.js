@@ -9,6 +9,7 @@ import { esc, toast, ago, safeFormat, fmtStamp } from "../util.js";
 import { getName } from "../store.js";
 import { hueOf } from "../ledger.js";
 import { prepareImage } from "../images.js";
+import { iaIdeaButton } from "../ia.js";
 
 export const meta = { id: "bingo", title: "Bingo del viaje", emoji: "🎯", blurb: "Tacha retos con una foto como prueba. Gana quien complete una línea." };
 
@@ -585,6 +586,7 @@ function editHtml() {
   const busy = D.busy;
   return `${dialogHead("Cambiar retos")}
     <p class="hint">Escribe el reto que quieras en cada casilla (hasta 120 letras). Si empieza con un emoji, se verá grande en la casilla. <strong>Si cambias un reto que ya tiene marcas, esas marcas se conservan</strong> con su foto bajo el reto nuevo.</p>
+    <p class="ia-line" data-ia-only>${iaIdeaButton("bingo-ideas", "Proponer retos con IA")}</p>
     <ul class="bingo-edit">${draft
       .map((text, i) => {
         const n = byCell.get(i)?.length ?? 0;

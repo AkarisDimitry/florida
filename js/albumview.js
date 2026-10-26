@@ -10,6 +10,7 @@ import { hueOf } from "./ledger.js";
 import { categoryBars, categoryPeopleHtml } from "./categorias.js";
 import { state } from "./state.js";
 import { clock } from "./media.js";
+import { iaDayTextButton } from "./ia.js";
 
 let current = null; // el álbum que se está mostrando; hydrateAlbum() lo usa para dibujar los mapas
 
@@ -205,6 +206,7 @@ function chapter(c) {
       ${weatherChip(c.day, { withRain: true })}
     </header>
     ${c.summary ? `<p class="day-summary">${esc(c.summary)}</p>` : ""}
+    <div class="ia-day-line" data-ia-only>${iaDayTextButton(c.day)}</div>
     ${c.stops.length ? mapPlaceholder(`day:${c.day}`, `Mapa de ${c.title}: ver el día en el mapa`, `data-action="day-on-map" data-day="${esc(c.day)}"`) : ""}
     ${c.center ? `<section class="wiki" data-wiki="${c.center.lat},${c.center.lng}"></section>` : ""}
     ${c.activities.map((a) => entry(a, c.color)).join("")}

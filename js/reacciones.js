@@ -169,9 +169,27 @@ export function reactionBarHtml(kind, id) {
   return `<div class="react-bar" data-react="${esc(keyOf(kind, id))}">${barInner(kind, id)}</div>`;
 }
 
+// Resumen compacto («❤️😂 3») para ponerlo sobre una miniatura; vacío y oculto si nadie ha reaccionado.
+function badgeText(kind, id) {
+  const by = R.map.get(keyOf(kind, id));
+  if (!by?.size) return "";
+  const top = [...by].sort((a, b) => b[1].length - a[1].length).slice(0, 2).map(([emoji]) => emoji).join("");
+  return `${top} ${[...by.values()].reduce((n, list) => n + list.length, 0)}`;
+}
+export function reactionBadgeHtml(kind, id) {
+  if (R.missing || !id) return "";
+  const text = badgeText(kind, id);
+  return `<span class="react-badge" data-react-badge="${esc(keyOf(kind, id))}" ${text ? "" : "hidden"}>${esc(text)}</span>`;
+}
+
 function paint(key) {
   const { kind, id } = parseKey(key);
   for (const el of document.querySelectorAll(`[data-react="${CSS.escape(key)}"]`)) el.innerHTML = barInner(kind, id);
+  for (const el of document.querySelectorAll(`[data-react-badge="${CSS.escape(key)}"]`)) {
+    const text = badgeText(kind, id);
+    el.hidden = !text;
+    el.textContent = text;
+  }
 }
 
 function paintAll() {
@@ -183,6 +201,7 @@ function paintAll() {
     const { kind, id } = parseKey(el.dataset.react);
     el.innerHTML = barInner(kind, id);
   }
+  for (const el of document.querySelectorAll("[data-react-badge]")) paint(el.dataset.reactBadge);
 }
 
 // ---------- acciones ----------
@@ -227,6 +246,13 @@ function togglePicker({ kind, id }) {
   R.picker = previous === key ? null : key;
   if (previous && previous !== key) paint(previous);
   paint(key);
+}
+
+// Doble toque en una foto: pone ❤️ si todavía no lo tenía (no lo quita, para no deshacerlo sin querer).
+export function likeOnce(kind, id) {
+  if (R.missing || !id || mine(keyOf(kind, id)).has("❤️")) return false;
+  toggle({ kind, id, emoji: "❤️" });
+  return true;
 }
 
 export const reaccionesActions = {

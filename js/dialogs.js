@@ -10,8 +10,9 @@ import { EXPORTERS } from "./export.js";
 import { settings, setSetting } from "./settings.js";
 import { threadHtml, commentsOf, cancelRecordings, withReplies, attachmentsOf, removeAttachments } from "./comments.js";
 import { resetActivityDraft, uploadActivityDraft, hasDraft, initAttach } from "./attach.js";
-import { reactionBarHtml } from "./reacciones.js";
+import { reactionBarHtml, likeOnce } from "./reacciones.js";
 import { ratingBoxHtml } from "./valoraciones.js";
+import { iaSettingsOpen } from "./ia.js";
 
 const activityDialog = $("#activity-dialog");
 const activityForm = $("#activity-form");
@@ -348,6 +349,15 @@ function bindLightbox() {
     if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.5) stepPhoto(dx < 0 ? 1 : -1);
   });
 
+  // Doble toque en la foto: ❤️ (con un corazón que salta). No quita la reacción si ya estaba.
+  stage.addEventListener("dblclick", () => {
+    if (!state.lightboxId || !likeOnce("photo", state.lightboxId)) return;
+    const heart = Object.assign(document.createElement("span"), { className: "heart-pop", textContent: "❤️" });
+    heart.setAttribute("aria-hidden", "true");
+    stage.append(heart);
+    setTimeout(() => heart.remove(), 800);
+    navigator.vibrate?.(10);
+  });
   $("#lb-prev").addEventListener("click", () => stepPhoto(-1));
   $("#lb-next").addEventListener("click", () => stepPhoto(1));
   lightbox.addEventListener("keydown", (event) => {
@@ -415,6 +425,7 @@ export function openSettings() {
   $("#live-toggle").checked = Boolean(state.sharing);
   $("#photo-loc-toggle").checked = settings.locatePhotos !== false;
   settingsDialog.showModal();
+  iaSettingsOpen(); // tarjeta «IA»: estado de la función, pasos y gasto de hoy
 }
 
 export function openPdfOptions() {

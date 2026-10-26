@@ -6,8 +6,9 @@ import { esc } from "../util.js";
 import * as batalla from "./batalla.js";
 import * as bolsa from "./bolsa.js";
 import * as bingo from "./bingo.js";
+import * as dibujos from "./dibujos.js";
 
-export const GAMES = [batalla, bolsa, bingo];
+export const GAMES = [batalla, bolsa, bingo, dibujos];
 const byId = (id) => GAMES.find((g) => g.meta.id === id);
 
 // Los juegos son compartidos entre viajeros, así que necesitan la base de datos (no el modo demo).

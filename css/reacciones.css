@@ -61,3 +61,13 @@
 .lightbox-info .react-picker { background: #1a2438; border-color: rgba(255, 255, 255, 0.18); }
 .lightbox-info .rate-avg, .lightbox-info .rate-mine { color: #94a3b8; }
 .lightbox-info .stars-row .star:not(.is-on) { color: rgba(255, 255, 255, 0.45); }
+
+/* resumen de reacciones sobre las miniaturas de la galería */
+.react-badge { position: absolute; right: 6px; bottom: 6px; z-index: 2; padding: 2px 7px; border-radius: 999px; background: rgba(15, 23, 42, 0.72); color: #fff; font-size: 0.72rem; font-weight: 750; line-height: 1.4; pointer-events: none; }
+.react-badge[hidden] { display: none; }
+.photo .rate-badge { left: 6px; }
+/* el corazón que salta al dar doble toque en una foto */
+.lightbox-stage { position: relative; }
+.heart-pop { position: absolute; left: 50%; top: 50%; z-index: 5; font-size: 5rem; line-height: 1; pointer-events: none; transform: translate(-50%, -50%) scale(0.4); opacity: 0; animation: heart-pop 0.8s ease-out forwards; }
+@keyframes heart-pop { 20% { opacity: 1; transform: translate(-50%, -50%) scale(1.15); } 60% { opacity: 1; transform: translate(-50%, -60%) scale(1); } 100% { opacity: 0; transform: translate(-50%, -90%) scale(1.1); } }
+@media (prefers-reduced-motion: reduce) { .heart-pop { animation-duration: 0.01s; } }

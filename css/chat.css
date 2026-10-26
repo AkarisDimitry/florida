@@ -92,17 +92,50 @@ body.typing .chat-shell { padding-bottom: 0; }
 .btn.danger-solid { background: #dc2626; color: #fff; border-color: #dc2626; font-weight: 800; }
 .btn.danger-solid[disabled] { opacity: 0.55; }
 
+/* responder citando un mensaje: arrastrar hacia un lado (js/chatswipe.js), botón «Responder» y la cita dentro de la burbuja */
+.chat-list { overflow-x: hidden; }
+.cmsg { position: relative; touch-action: pan-y; }
+.cmsg.is-dragging { user-select: none; -webkit-user-select: none; }
+.cswipe-ico {
+  position: absolute; top: 50%; width: 32px; height: 32px; margin-top: -16px; border-radius: 50%; display: grid; place-items: center;
+  background: var(--surface-2); border: 1px solid var(--line); color: var(--muted); font-weight: 800; opacity: 0; pointer-events: none;
+  transform: scale(calc(0.5 + var(--p, 0) * 0.5)); transition: background 0.12s, color 0.12s;
+}
+.cswipe-ico.is-left { left: -44px; }
+.cswipe-ico.is-right { right: -44px; }
+.cswipe-ico.is-armed { background: var(--accent); border-color: var(--accent); color: #fff; }
+.cquote {
+  display: grid; gap: 1px; align-content: center; width: 100%; min-width: 0; min-height: 34px; padding: 5px 9px; text-align: left; border: 0; border-left: 3px solid hsl(var(--h, 210) 55% 45%); border-radius: 8px;
+  background: rgba(127, 127, 127, 0.16); color: inherit; font: inherit; font-size: 0.8rem; cursor: pointer;
+}
+.cquote strong { font-size: 0.74rem; color: hsl(var(--h, 210) 55% 38%); }
+.cquote span { opacity: 0.88; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow-wrap: anywhere; }
+.cquote.is-gone { font-style: italic; opacity: 0.75; cursor: default; }
+.cmsg.mine .cquote { background: rgba(255, 255, 255, 0.2); border-left-color: rgba(255, 255, 255, 0.85); }
+.cmsg.mine .cquote strong { color: #fff; }
+.cmsg.is-flash .cbubble { animation: chat-flash 1.4s ease-out; }
+@keyframes chat-flash { 0%, 45% { box-shadow: 0 0 0 3px var(--accent); } 100% { box-shadow: 0 0 0 3px transparent; } }
+@media (prefers-reduced-motion: reduce) { .cmsg.is-flash .cbubble { animation: none; box-shadow: 0 0 0 3px var(--accent); } }
+.chat-reply-btn { min-height: 32px !important; padding: 4px 6px !important; font-size: 0.68rem !important; opacity: 0.85; }
+.chat-replying { display: flex; align-items: center; gap: 10px; padding: 6px 6px 6px 10px; border-radius: 12px; background: var(--surface-2); border-left: 4px solid var(--accent); }
+.chat-replying[hidden] { display: none; }
+.chat-replying-ico { color: var(--accent); font-weight: 800; }
+.chat-replying-txt { display: grid; flex: 1; min-width: 0; }
+.chat-replying-txt strong { font-size: 0.8rem; color: hsl(var(--h, 210) 55% 38%); }
+.chat-replying-txt small { color: var(--muted); font-size: 0.8rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chat-replying .mini-x { flex: none; min-width: 40px; min-height: 40px; font-size: 0.9rem; }
+
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) .chat-status { background: #422006; color: #fde68a; }
   :root:not([data-theme="light"]) .chat-alert { background: #2a0e0e; color: #fecaca; border-color: #ef4444; }
   :root:not([data-theme="light"]) .chip-btn { background: #1f2937; color: #fecaca; border-color: #7f1d1d; }
   :root:not([data-theme="light"]) .chip-btn.is-on { background: #dc2626; color: #fff; }
   :root:not([data-theme="light"]) .chat-alert input { background: #111827; color: #f3f4f6; border-color: #7f1d1d; }
-  :root:not([data-theme="light"]) .cwho { color: hsl(var(--h) 70% 72%); }
+  :root:not([data-theme="light"]) .cwho, :root:not([data-theme="light"]) .cquote strong, :root:not([data-theme="light"]) .chat-replying-txt strong { color: hsl(var(--h) 70% 72%); }
 }
 :root[data-theme="dark"] .chat-status { background: #422006; color: #fde68a; }
 :root[data-theme="dark"] .chat-alert { background: #2a0e0e; color: #fecaca; border-color: #ef4444; }
 :root[data-theme="dark"] .chip-btn { background: #1f2937; color: #fecaca; border-color: #7f1d1d; }
 :root[data-theme="dark"] .chip-btn.is-on { background: #dc2626; color: #fff; }
 :root[data-theme="dark"] .chat-alert input { background: #111827; color: #f3f4f6; border-color: #7f1d1d; }
-:root[data-theme="dark"] .cwho { color: hsl(var(--h) 70% 72%); }
+:root[data-theme="dark"] .cwho, :root[data-theme="dark"] .cquote strong, :root[data-theme="dark"] .chat-replying-txt strong { color: hsl(var(--h) 70% 72%); }

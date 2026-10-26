@@ -1,0 +1,109 @@
+/* Ayudas de IA (✨): asistente del viaje, pie de foto, traducir, resumen del día e ideas para los juegos. Usa las variables de styles.css. */
+
+/* Todo lo marcado con data-ia-only está escondido mientras la IA no esté disponible (js/ia.js pone data-ia-ok="on" cuando lo está). */
+html:not([data-ia-ok="on"]) [data-ia-only] { display: none !important; }
+
+/* ---------- botones ---------- */
+.ia-btn { min-height: 36px; }
+.ia-ask {
+  display: flex; width: 100%; margin: 0 0 12px; min-height: 46px; justify-content: center;
+  background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 35%, var(--line)); color: var(--accent); box-shadow: none;
+}
+.ia-icon { font-size: 1rem; line-height: 1; }
+.ia-day-line { margin: 8px 0 2px; }
+@media (pointer: coarse) { .ia-btn { min-height: 40px; } .ia-ask { min-height: 46px; } }
+
+/* ---------- aviso de privacidad ---------- */
+.ia-consent form { display: grid; gap: 10px; }
+.ia-consent p { margin: 0; }
+
+/* ---------- asistente y resumen ---------- */
+.ia-dialog { padding: 14px 14px calc(14px + var(--safe-b)); overflow: hidden; }
+.ia-dialog[open] { display: flex; flex-direction: column; gap: 8px; height: min(88dvh, 720px); }
+.ia-dialog .dialog-head { margin-bottom: 0; flex: none; }
+.ia-sum-dialog[open] { height: auto; max-height: min(92dvh, 720px); overflow: auto; }
+.ia-thread { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding: 4px 2px; overscroll-behavior: contain; }
+.ia-msg { max-width: 92%; padding: 9px 13px; border-radius: 18px; background: var(--surface-2); border: 1px solid var(--line); overflow-wrap: anywhere; }
+.ia-msg.is-user { align-self: flex-end; background: var(--grad); border-color: transparent; color: var(--accent-ink); border-bottom-right-radius: 6px; }
+.ia-msg.is-bot { align-self: flex-start; border-bottom-left-radius: 6px; }
+.ia-msg.is-error { align-self: stretch; max-width: 100%; background: color-mix(in srgb, var(--danger) 10%, var(--surface)); border-color: color-mix(in srgb, var(--danger) 40%, var(--line)); display: grid; gap: 6px; justify-items: start; }
+.ia-msg-text { margin: 0; white-space: pre-wrap; font-size: 0.95rem; line-height: 1.45; }
+.ia-msg .link-btn { min-height: 36px; padding-inline: 2px; }
+.ia-empty { margin: auto; padding: 18px 10px; display: grid; gap: 8px; justify-items: center; text-align: center; color: var(--muted); }
+.ia-empty > span { font-size: 2rem; }
+.ia-empty p { margin: 0; }
+.ia-dots { display: inline-flex; gap: 3px; vertical-align: middle; }
+.ia-dots i { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); animation: ia-dot 1.1s ease-in-out infinite; }
+.ia-dots i:nth-child(2) { animation-delay: 0.15s; }
+.ia-dots i:nth-child(3) { animation-delay: 0.3s; }
+@keyframes ia-dot { 0%, 80%, 100% { opacity: 0.25; transform: translateY(0); } 40% { opacity: 1; transform: translateY(-3px); } }
+@media (prefers-reduced-motion: reduce) { .ia-dots i { animation: none; opacity: 0.6; } }
+:root[data-motion="off"] .ia-dots i { animation: none; opacity: 0.6; }
+
+.ia-quick { flex: none; display: flex; gap: 6px; overflow-x: auto; padding: 2px 0 4px; scrollbar-width: none; }
+.ia-quick::-webkit-scrollbar { display: none; }
+.ia-chip { flex: none; white-space: nowrap; min-height: 36px; cursor: pointer; }
+.ia-form { flex: none; display: flex; align-items: flex-end; gap: 8px; }
+.ia-form textarea { flex: 1; min-width: 0; min-height: 44px; max-height: 120px; resize: none; padding: 10px 14px; border-radius: 22px; font: inherit; font-size: 16px; line-height: 1.35; }
+.ia-form .btn { flex: none; min-height: 44px; }
+.ia-foot { flex: none; margin: 0; font-size: 0.74rem; color: var(--muted); }
+.ia-foot .link-btn { font-size: 0.74rem; min-height: 32px; padding: 4px 2px; }
+.ia-quota { display: block; font-size: 0.74rem; color: var(--muted); }
+.ia-foot .ia-quota { display: inline; }
+.ia-sum-wait { display: flex; align-items: center; gap: 8px; padding: 18px 4px; color: var(--muted); }
+#ia-sum-text { width: 100%; min-height: 180px; padding: 12px 14px; border-radius: 16px; font: inherit; font-size: 16px; line-height: 1.5; resize: vertical; }
+.ia-sum-count { margin: 0; text-align: right; }
+.ia-sum-actions { margin-top: 2px; }
+
+/* ---------- traducir (comentarios y chat) ---------- */
+.ia-tr { margin-top: 2px; min-width: 0; }
+.ia-tr-btn { display: inline-flex; align-items: center; gap: 4px; min-height: 32px; padding: 3px 4px; border: 0; background: none; cursor: pointer; color: var(--accent); font-size: 0.78rem; font-weight: 650; }
+@media (pointer: coarse) { .ia-tr-btn { min-height: 40px; } }
+.ia-tr-wait, .ia-tr-err { font-size: 0.8rem; color: var(--muted); }
+.ia-tr-err { color: var(--danger); }
+.ia-tr-box { display: grid; gap: 2px; margin: 4px 0; padding: 7px 10px; border-radius: 12px; background: var(--accent-soft); border-left: 3px solid var(--accent); }
+.ia-tr-box small { font-size: 0.72rem; font-weight: 700; color: var(--accent); }
+.ia-tr-box p { margin: 0; font-size: 0.92rem; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text); }
+.ia-tr-box .ia-tr-btn { justify-self: start; }
+.cmsg.mine .ia-tr-btn { color: rgba(255, 255, 255, 0.92); }
+.cmsg.mine .ia-tr-wait { color: rgba(255, 255, 255, 0.8); }
+.cmsg.mine .ia-tr-err { color: #ffe1de; }
+.cmsg.mine .ia-tr-box { background: rgba(255, 255, 255, 0.16); border-left-color: rgba(255, 255, 255, 0.7); }
+.cmsg.mine .ia-tr-box small, .cmsg.mine .ia-tr-box p { color: #fff; }
+.cm-body .ia-tr { margin-top: 0; }
+
+/* ---------- pie de foto (visor) ---------- */
+.lb-caption-form { flex-wrap: wrap; }
+.lb-caption-form .ia-caption-btn { flex: 1 1 100%; justify-content: center; }
+.ia-suggest { flex: 1 1 100%; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.ia-suggest .ia-hint { flex: 1 1 100%; margin: 0; font-size: 0.78rem; color: #9fb0c8; }
+.ia-suggest .ia-tr-wait { color: #9fb0c8; }
+.ia-suggest .ia-tr-err { color: #ff8a80; }
+.ia-suggest .ia-quota { flex: 1 1 100%; color: #9fb0c8; }
+.ia-sugg { min-height: 40px; padding: 8px 14px; border-radius: 16px; border: 1px solid #2a364d; background: #1a2438; color: #fff; font: inherit; font-size: 0.88rem; text-align: left; cursor: pointer; overflow-wrap: anywhere; }
+.ia-sugg:active { transform: scale(0.97); }
+
+/* ---------- ideas para los juegos ---------- */
+.ia-line { display: flex; justify-content: center; margin: 2px 0 0; }
+.ia-chips { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
+.ia-chips:empty { display: none; }
+
+/* ---------- Ajustes → IA ---------- */
+.ia-section h4 { margin: 14px 0 6px; font-size: 0.82rem; }
+.ia-check, .ia-people { list-style: none; margin: 8px 0; padding: 0; display: grid; gap: 4px; }
+.ia-check li { font-size: 0.88rem; }
+.ia-check .is-ok { color: var(--ok, #15803d); }
+.ia-check .is-no { color: var(--danger); }
+.ia-steps { margin: 8px 0; padding-left: 20px; display: grid; gap: 6px; font-size: 0.86rem; }
+.ia-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
+.ia-probe { display: grid; gap: 4px; margin: 6px 0; padding: 8px 10px; border-radius: 12px; background: var(--surface-2); }
+.ia-probe p { margin: 0; font-size: 0.84rem; overflow-wrap: anywhere; }
+.ia-probe .is-ok { color: var(--ok, #15803d); }
+.ia-probe .is-no { color: var(--danger); }
+.ia-usage { margin: 8px 0 0; font-size: 0.88rem; }
+.ia-people li { display: flex; justify-content: space-between; gap: 8px; padding: 6px 10px; border-radius: 10px; background: var(--surface-2); font-size: 0.86rem; }
+.ia-limits { display: grid; gap: 8px; }
+.ia-limits label { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 0.84rem; }
+.ia-limits label span { min-width: 0; }
+.ia-limits input { flex: none; width: 88px; min-height: 40px; padding: 6px 10px; text-align: right; }
+.ia-limits .btn { justify-self: start; }

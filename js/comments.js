@@ -9,6 +9,7 @@ import { prepareImage } from "./images.js";
 import { pickFiles, canRecord, startRecording, cancelAllRecordings, clock } from "./media.js";
 import { reactionBarHtml } from "./reacciones.js";
 import { emojiPanelHtml, insertAtCursor, rememberEmoji } from "./emojis.js";
+import { iaTranslateHtml } from "./ia.js";
 
 // Estado de cada caja de escribir (clave: "a:<id de actividad>" o "p:<id de foto>"): foto, audio, grabación y a quién responde.
 const boxes = new Map();
@@ -35,6 +36,7 @@ function commentHtml(c, key, replies = []) {
     <span class="person-dot sm" style="--h:${hueOf(name)}" aria-hidden="true">${esc(name.charAt(0).toUpperCase())}</span>
     <div class="cm-body">
       <p class="cm-text"><span class="who">${esc(name)}</span>${c.body ? ` ${esc(c.body)}` : ""}</p>
+      ${iaTranslateHtml("comment", c.id, c.body)}
       ${attachmentHtml(c)}
       <div class="cm-meta"><small>${esc(ago(Date.parse(c.created_at) || Date.now()))}</small>
         ${!c.reply_to ? `<button type="button" class="link-btn" data-action="compose-reply" data-key="${esc(key)}" data-id="${esc(c.id)}">Responder</button>` : ""}

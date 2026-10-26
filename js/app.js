@@ -35,7 +35,9 @@ import { ubicarActions } from "./ubicar.js";
 import { initChat, syncChat, enterChat, leaveChat } from "./chat.js";
 import { initUpdates } from "./actualizar.js";
 import { reaccionesActions, syncReacciones } from "./reacciones.js";
+import { syncEstado } from "./estado.js";
 import { valoracionesActions, syncValoraciones } from "./valoraciones.js";
+import { syncIa, iaApi } from "./ia.js";
 import { renderAlbum, hydrateAlbum, stopHydrating } from "./albumview.js";
 import { initCola, colaStart, colaSynced, colaActions, colaLoginNote, usable as colaUsable, enqueue as colaEnqueue, kick as colaKick, settle as colaSettle, beginBatch as colaBeginBatch, blockedReason as colaBlocked, ColaError } from "./cola.js";
 
@@ -281,6 +283,8 @@ function render({ user = false } = {}) {
   syncChat(); // chat: carga y tiempo real cuando hay sesión de viajero
   syncReacciones(); // reacciones y estrellas: carga y tiempo real cuando hay sesión
   syncValoraciones();
+  syncIa(); // ayudas de IA (✨): comprueba si están disponibles y enciende sus botones
+  syncEstado(); // administradores: aviso de las partes de la base de datos que faltan
   syncEncuentro(); // punto de encuentro: banner de arriba, pin del mapa y carga de datos
 }
 
@@ -1140,7 +1144,7 @@ initAvisos();
 initEncuentro({ chips: () => state.view === "map" && ctx.map?.ready() && ($("#map-chips").innerHTML = renderChips()) });
 
 try {
-  ctx.actions = { openDiscover, cameraChallenge, refresh, render, pickOnMap, focusPhotoOnMap, exportPdf, resumeSharedPlace, setSharing, focusPerson, alert: showAlert, showCodeStep: (email) => { state.loginEmail = email; state.loginStep = "code"; render(); } };
+  ctx.actions = { openDiscover, cameraChallenge, refresh, render, pickOnMap, focusPhotoOnMap, exportPdf, resumeSharedPlace, setSharing, focusPerson, alert: showAlert, ...iaApi, showCodeStep: (email) => { state.loginEmail = email; state.loginStep = "code"; render(); } };
   ctx.store = await createStore(scheduleRefresh, schedulePeople);
   if (ctx.store.mode === "supabase") await initCola(); // fotos guardadas en el móvil esperando señal (cola.js)
   ctx.map = createMap({

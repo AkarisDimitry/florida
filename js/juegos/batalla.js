@@ -13,6 +13,7 @@ import { pickFiles } from "../media.js";
 import { hueOf, people } from "../ledger.js";
 import { requireName } from "../dialogs.js";
 import { starsHtml } from "../valoraciones.js";
+import { iaIdeaButton } from "../ia.js";
 
 export const meta = { id: "batalla", title: "Batalla de fotos", emoji: "📸", blurb: "Un reto de foto, todos participan con la cámara y se vota la mejor." };
 
@@ -404,6 +405,7 @@ function renderIdle() {
         <input name="prompt" maxlength="${PROMPT_MAX}" required data-keep="batalla-tema" placeholder="Ej.: La sonrisa más rara" value="${esc(S.draft)}" enterkeyhint="send">
       </label>
       <div class="bt-chips" role="group" aria-label="Ideas de temas">${chips}</div>
+      <p class="ia-line" data-ia-line data-ia-only>${iaIdeaButton("battle-idea", "Idea con IA")}</p>
       <div class="bt-actions">
         <button type="button" class="btn bt-big" data-action="batalla-otra">${icon("sparkle", 18)} Otra idea</button>
         <button type="submit" class="btn primary bt-big" ${launching ? "disabled" : ""}>${launching ? "Lanzando…" : "Lanzar reto"}</button>

@@ -8,12 +8,13 @@ const SHARE = "viaje-compartido"; // fotos recibidas desde la galería del móvi
 const SHELL_FILES = [
   "./", "index.html", "css/styles.css", "manifest.webmanifest", "icons/icon.svg",
   "js/album.js", "js/albumview.js", "js/mapimage.js", "js/pdf.js", "js/settings.js", "js/weather.js", "js/places.js", "js/live.js",
-  "js/juegos/index.js", "js/juegos/batalla.js", "js/juegos/bolsa.js", "js/juegos/bingo.js",
-  "css/juegos.css", "css/bateria.css", "css/ubicar.css", "css/chat.css", "js/chat.js", "css/actualizar.css", "js/actualizar.js", "css/reacciones.css", "js/reacciones.js", "js/valoraciones.js", "js/emojis.js", "js/ubicar.js", "js/bateria.js", "js/recorrido.js", "js/maprecorrido.js", "css/juego-batalla.css", "css/juego-bolsa.css", "css/juego-bingo.css", "js/ideas.js", "js/media.js", "js/comments.js", "js/attach.js", "js/accessdialog.js", "js/people.js", "js/presence.js", "js/ledger.js", "js/extras.js", "js/expensedialog.js", "js/share.js", "js/discover.js",
+  "js/juegos/index.js", "js/juegos/batalla.js", "js/juegos/bolsa.js", "js/juegos/bingo.js", "js/juegos/dibujos.js", "js/juegos/dibujos-lienzo.js", "css/juego-dibujos.css",
+  "css/juegos.css", "css/bateria.css", "css/ubicar.css", "css/chat.css", "js/chat.js", "js/chatswipe.js", "css/actualizar.css", "js/actualizar.js", "css/reacciones.css", "css/estado.css", "js/estado.js", "js/reacciones.js", "js/valoraciones.js", "js/emojis.js", "js/ubicar.js", "js/bateria.js", "js/recorrido.js", "js/maprecorrido.js", "css/juego-batalla.css", "css/juego-bolsa.css", "css/juego-bingo.css", "js/ideas.js", "js/media.js", "js/comments.js", "js/attach.js", "js/accessdialog.js", "js/people.js", "js/presence.js", "js/ledger.js", "js/extras.js", "js/expensedialog.js", "js/share.js", "js/discover.js",
   "js/app.js", "js/config.js", "js/dialogs.js", "js/export.js", "js/geo.js", "js/icons.js",
   "js/images.js", "js/map.js", "js/state.js", "js/store.js", "js/trip.js", "js/util.js", "js/views.js",
   "css/cola.css", "js/cola.js", "js/formatos.js", "js/fotoloc.js", // cola de fotos sin conexión, formatos de foto y ubicación de las fotos
   "css/encuentro.css", "js/encuentro.js", // punto de encuentro
+  "css/ia.css", "js/ia.js", "js/ia-contexto.js", "js/ia-dialogos.js", // ayudas de IA (✨)
   "css/avisos.css", "js/avisos.js", "js/avisos-push.js", "icons/badge.png", // avisos: alertas en pantalla, campana y notificaciones
   "css/categorias.css", "js/categorias.js", "js/gastopresets.js", "js/gastoloc.js", "js/mapgastos.js", // categorías de gasto, atajos, ubicación del gasto y gastos en el mapa
 ];

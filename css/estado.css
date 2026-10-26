@@ -1,0 +1,21 @@
+/* Estado de la base de datos (Ajustes, administradores). */
+#estado-section[hidden] { display: none; }
+.estado-resumen { margin: 4px 0 8px; padding: 10px 12px; border-radius: 12px; font-size: 0.92rem; }
+.estado-resumen.is-ok { background: #dcfce7; color: #14532d; }
+.estado-resumen.is-warn { background: #fef3c7; color: #92400e; }
+.estado-list { list-style: none; margin: 8px 0; padding: 0; display: grid; gap: 4px; }
+.estado-list li { display: flex; gap: 10px; align-items: flex-start; padding: 7px 10px; border-radius: 12px; background: var(--surface-2); border: 1px solid var(--line); min-width: 0; }
+.estado-list li.estado-missing { border-color: #f59e0b; }
+.estado-ico { flex: none; width: 22px; text-align: center; }
+.estado-txt { display: grid; min-width: 0; }
+.estado-txt strong { font-size: 0.9rem; }
+.estado-txt small { color: var(--muted); font-size: 0.76rem; overflow-wrap: anywhere; }
+.estado-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 6px 0; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .estado-resumen.is-ok { background: #052e16; color: #bbf7d0; }
+  :root:not([data-theme="light"]) .estado-resumen.is-warn { background: #422006; color: #fde68a; }
+}
+:root[data-theme="dark"] .estado-resumen.is-ok { background: #052e16; color: #bbf7d0; }
+:root[data-theme="dark"] .estado-resumen.is-warn { background: #422006; color: #fde68a; }
+
+.estado-txt .btn { justify-self: start; margin-top: 6px; }

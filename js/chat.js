@@ -1,5 +1,7 @@
 // Chat de la familia con alertas (pestaña «Chat»). Mensajes de texto con foto o nota de voz opcionales, y un botón rojo «Alerta» que
 // hace sonar el móvil de todos (o de las personas elegidas) y que cada destinatario confirma con «Entendido».
+// Un mensaje se responde arrastrándolo hacia un lado (chatswipe.js) o con «Responder»: lleva la cita del original (columna reply_to,
+// supabase/chat_respuestas.sql).
 // Todo vive en su propio contenedor (#chat-view): la página no lo repinta, así que no se pierde lo escrito, el foco ni un audio que suena.
 // Datos: tablas chat_messages y chat_acks (supabase/chat.sql); las alertas se crean con la función send_alert.
 import { state, ctx } from "./state.js";
@@ -11,6 +13,8 @@ import { prepareImage } from "./images.js";
 import { pickFiles, canRecord, startRecording, cancelAllRecordings, clock } from "./media.js";
 import { showPhoto } from "./dialogs.js";
 import { reactionBarHtml, handleReactionClick } from "./reacciones.js";
+import { iaTranslateHtml } from "./ia.js";
+import { initSwipeReply } from "./chatswipe.js";
 import { emojiPanelHtml, insertAtCursor, rememberEmoji } from "./emojis.js";
 
 const PAGE = 200; // mensajes que se cargan de golpe (y cada vez que se piden «anteriores»)
@@ -37,6 +41,9 @@ const S = {
   timer: null,
   visible: false, // la pestaña Chat está a la vista
   unseenBelow: 0,
+  replyTo: null, // id del mensaje al que se está respondiendo
+  quotes: new Map(), // id -> mensaje citado que no está en la lista cargada (null = ya no existe)
+  quoteLoading: new Set(),
   photo: null, // { file, url } elegida para enviar
   audio: null, // { blob, seconds, mime, url }
   recording: null,
@@ -114,6 +121,7 @@ const linkify = (html) =>
 
 // ---------- carga y tiempo real ----------
 
+const isMissingColumn = (error) => ["42703", "PGRST204"].includes(error?.code) || /reply_to/i.test(error?.message || "") && /column|schema cache/i.test(error?.message || "");
 const isMissingTable = (error) => ["42P01", "PGRST205"].includes(error?.code) || /does not exist|schema cache|could not find the table/i.test(error?.message || "");
 
 async function fetchMessages(before = null) {
@@ -168,6 +176,7 @@ async function load() {
     S.hasMore = rows.length === PAGE;
     mergeAcks(await fetchAcks(S.messages.filter((m) => m.kind === "alerta").map((m) => m.id)));
     S.missing = false;
+    ensureQuotes();
     if (read(SEEN_KEY) == null) markSeen(); // la primera vez, lo que ya había cuenta como visto
   } catch (err) {
     if (isMissingTable(err)) S.missing = true;
@@ -233,6 +242,7 @@ function unsubscribe() {
 function onMessage(m, { silent = false } = {}) {
   if (!m?.id || !insertMessage(m)) return;
   ensureAttachments();
+  if (m.reply_to) ensureQuotes();
   const mine = isMine(m);
   if (S.visible && !document.hidden) {
     appendEl(m, mine);
@@ -249,7 +259,10 @@ function onDeleted(id) {
   if (i < 0) return;
   S.messages.splice(i, 1);
   S.acks.delete(id);
+  S.quotes.set(id, null); // las respuestas que lo citaban pasan a decir «Este mensaje fue eliminado»
   q(`[data-mid="${CSS.escape(id)}"]`)?.remove();
+  repaintQuotes([id]);
+  if (S.replyTo === id) clearReply();
   tidyDays();
   paintBadge();
 }
@@ -305,6 +318,85 @@ async function ack(id, { quiet = false } = {}) {
   }
 }
 
+// ---------- respuestas citando un mensaje ----------
+
+const clip = (text, n) => (text.length > n ? `${text.slice(0, n - 1).trimEnd()}…` : text);
+// Lo que se enseña de un mensaje citado: sus primeras palabras, o «📷 Foto» / «🎤 Nota de voz» si no tiene texto.
+function snippetOf(m) {
+  const body = String(m.body ?? "").replace(/\s+/g, " ").trim();
+  const mark = m.attached_photo ? "📷 " : m.attached_audio ? "🎤 " : "";
+  return clip(body ? `${mark}${body}` : m.attached_photo ? "📷 Foto" : m.attached_audio ? "🎤 Nota de voz" : "", 90);
+}
+// El mensaje al que contesta `reply_to`: de la lista cargada o, si es muy antiguo, el que se pidió aparte. null = ya no existe.
+const quotedOf = (id) => S.messages.find((x) => x.id === id) ?? (S.quotes.has(id) ? S.quotes.get(id) : undefined);
+
+function quoteHtml(m) {
+  if (!m.reply_to) return "";
+  const original = quotedOf(m.reply_to);
+  const gone = original === null;
+  const who = gone ? "" : original ? (original.user_id && original.user_id === me() ? "Tú" : original.name) : "";
+  const text = gone ? "Este mensaje fue eliminado" : original ? snippetOf(original) : "Cargando…";
+  return `<button type="button" class="cquote ${gone ? "is-gone" : ""}" data-chat="goto" data-id="${esc(m.reply_to)}" style="--h:${hueOf(original?.name ?? "")}" ${gone ? "disabled" : ""} aria-label="${esc(`Mensaje citado${who ? ` de ${who}` : ""}: ${text}`)}">${who ? `<strong>${esc(who)}</strong>` : ""}<span>${esc(text)}</span></button>`;
+}
+
+// Pide los mensajes citados que no están en la lista (por ser anteriores a lo cargado) y repinta sus citas.
+async function ensureQuotes() {
+  const need = [...new Set(S.messages.map((m) => m.reply_to).filter((id) => id && !S.messages.some((x) => x.id === id) && !S.quotes.has(id) && !S.quoteLoading.has(id)))];
+  if (!need.length || !sb()) return;
+  need.forEach((id) => S.quoteLoading.add(id));
+  try {
+    const { data, error } = await sb().from("chat_messages").select("id,user_id,name,kind,body,attached_photo,attached_audio").in("id", need);
+    if (error) throw error;
+    const found = new Map((data ?? []).map((r) => [r.id, r]));
+    for (const id of need) S.quotes.set(id, found.get(id) ?? null);
+  } catch (err) {
+    console.warn("Chat (citas):", err.message || err);
+  } finally {
+    need.forEach((id) => S.quoteLoading.delete(id));
+  }
+  repaintQuotes(need);
+}
+
+function repaintQuotes(ids) {
+  const set = new Set(ids);
+  for (const m of S.messages) {
+    if (!m.reply_to || !set.has(m.reply_to)) continue;
+    const node = q(`[data-mid="${CSS.escape(m.id)}"] .cquote`);
+    if (node) node.outerHTML = quoteHtml(m);
+  }
+}
+
+function gotoMessage(id) {
+  const node = q(`[data-mid="${CSS.escape(id)}"]`);
+  if (!node) return toast("Ese mensaje es más antiguo: toca «Ver mensajes anteriores» arriba del chat.", 6000);
+  node.scrollIntoView({ block: "center", behavior: window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+  node.classList.remove("is-flash");
+  void node.offsetWidth; // reinicia la animación si ya la tenía
+  node.classList.add("is-flash");
+}
+
+const canReplyTo = (id) => {
+  const m = S.messages.find((x) => x.id === id);
+  return Boolean(m) && m.kind === "texto" && !m._pending && !m._failed && canChat();
+};
+
+function setReply(id) {
+  if (!canReplyTo(id) || S.recording) return;
+  const stick = nearBottom(); // la barra «Respondiendo a…» le quita sitio a la lista: si estaba abajo, se queda abajo
+  S.replyTo = id;
+  paintComposer();
+  if (stick) toBottom();
+  q("#chat-input")?.focus();
+}
+
+function clearReply() {
+  if (!S.replyTo) return;
+  const stick = nearBottom();
+  S.replyTo = null;
+  paintComposer();
+  if (stick) toBottom();
+}
+
 // ---------- fotos y notas de voz de los mensajes ----------
 
 // Las fotos y audios que llegan por el chat se cargan con el resto de datos del viaje; si aún no están, se pide un refresco.
@@ -352,10 +444,12 @@ function textHtml(m) {
     ${mine ? "" : avatar(m.name)}
     <div class="cbubble" data-chat="bubble">
       ${mine ? "" : `<strong class="cwho" style="--h:${hueOf(m.name)}">${esc(m.name)}</strong>`}
+      ${quoteHtml(m)}
       ${attachmentHtml(m)}
       ${m.body ? `<p>${linkify(esc(m.body))}</p>` : ""}
+      ${m._pending || m._failed ? "" : iaTranslateHtml("chat", m.id, m.body)}
       ${m._pending || m._failed ? "" : reactionBarHtml("chat", m.id)}
-      <span class="cmeta">${m._failed ? `<button type="button" class="link-btn" data-chat="retry" data-id="${esc(m.id)}">No se envió · Reintentar</button>` : m._pending ? "Enviando…" : esc(timeOf(m.created_at))}
+      <span class="cmeta">${m._failed || m._pending ? "" : `<button type="button" class="link-btn chat-reply-btn" data-chat="reply" data-id="${esc(m.id)}" aria-label="Responder a este mensaje">Responder</button>`}${m._failed ? `<button type="button" class="link-btn" data-chat="retry" data-id="${esc(m.id)}">No se envió · Reintentar</button>` : m._pending ? "Enviando…" : esc(timeOf(m.created_at))}
         ${mine && !m._pending && !m._failed ? `<button type="button" class="link-btn chat-del" data-chat="delete" data-id="${esc(m.id)}" aria-label="Borrar el mensaje">Borrar</button>` : ""}</span>
     </div>
   </div>`;
@@ -507,6 +601,7 @@ function buildUi() {
     <button type="button" class="chat-new" id="chat-new" hidden></button>
     <div class="chat-compose" id="chat-compose">
       <div class="chat-alert" id="chat-alert" hidden></div>
+      <div class="chat-replying" id="chat-replying" hidden></div>
       <div class="chat-previews" id="chat-previews" hidden></div>
       <div class="chat-rec" id="chat-rec" hidden></div>
       <div class="chat-emoji" id="chat-emoji" hidden></div>
@@ -539,8 +634,12 @@ function buildUi() {
     if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
       event.preventDefault();
       send();
+    } else if (event.key === "Escape" && S.replyTo) {
+      event.preventDefault();
+      clearReply();
     }
   });
+  initSwipeReply(list(), { canReply: canReplyTo, onReply: setReply });
   list().addEventListener("scroll", () => {
     if (nearBottom()) {
       S.unseenBelow = 0;
@@ -608,10 +707,22 @@ function paintComposer() {
   rec.innerHTML = recording
     ? `<span class="rec-dot" aria-hidden="true"></span><strong>Grabando <span id="chat-rec-t">${esc(clock(S.recSeconds))}</span></strong><button type="button" class="btn small primary" data-chat="rec-stop">Parar</button><button type="button" class="btn small ghost" data-chat="rec-cancel">Cancelar</button>`
     : "";
+  paintReplying();
   q("#chat-tools").hidden = recording;
   q("#chat-form").hidden = recording;
   q("#chat-send")?.toggleAttribute("disabled", S.sending);
   paintAlertPanel();
+}
+
+function paintReplying() {
+  const bar = q("#chat-replying");
+  if (!bar) return;
+  const m = S.replyTo && S.messages.find((x) => x.id === S.replyTo);
+  if (!m) S.replyTo = null;
+  bar.hidden = !m || Boolean(S.recording);
+  bar.innerHTML = m
+    ? `<span class="chat-replying-ico" aria-hidden="true">↩</span><span class="chat-replying-txt" style="--h:${hueOf(m.name)}"><strong>${esc(isMine(m) ? "Tú" : m.name)}</strong><small>${esc(snippetOf(m))}</small></span><button type="button" class="mini-x" data-chat="reply-cancel" aria-label="Cancelar la respuesta">✕</button>`
+    : "";
 }
 
 // ---------- el panel de «Alerta» ----------
@@ -694,15 +805,17 @@ async function send(retry = null) {
   if (!getName()) return toast("Pon tu nombre en tu perfil para escribir en el chat.");
   const id = retry?.id ?? crypto.randomUUID();
   const draft = retry ? retry._draft ?? null : { photo: S.photo, audio: S.audio };
-  const m = retry ?? { id, user_id: me(), name: getName(), kind: "texto", body, to_users: null, attached_photo: null, attached_audio: null, created_at: new Date().toISOString() };
+  const m = retry ?? { id, user_id: me(), name: getName(), kind: "texto", body, to_users: null, attached_photo: null, attached_audio: null, reply_to: S.replyTo, created_at: new Date().toISOString() };
   if (!retry) {
     if (draft.photo) m._photoUrl = draft.photo.url;
     if (draft.audio) Object.assign(m, { _audioUrl: draft.audio.url, _seconds: draft.audio.seconds });
     S.photo = null;
     S.audio = null;
+    S.replyTo = null;
     input.value = "";
     autosize();
     S.messages.push(m);
+    ensureQuotes();
   }
   m._pending = true;
   m._failed = false;
@@ -713,8 +826,16 @@ async function send(retry = null) {
     // Primero los adjuntos (foto o audio), luego el mensaje que los lleva.
     if (draft?.photo && !m.attached_photo) m.attached_photo = await ctx.store.addPhoto({ ...(await prepareImage(draft.photo.file)) });
     if (draft?.audio && !m.attached_audio) m.attached_audio = await ctx.store.addAudio({ blob: draft.audio.blob, seconds: draft.audio.seconds, mime: draft.audio.mime });
-    const row = { id: m.id, name: m.name, body: m.body, ...(m.attached_photo && { attached_photo: m.attached_photo }), ...(m.attached_audio && { attached_audio: m.attached_audio }) };
-    const { error } = await sb().from("chat_messages").insert(row);
+    const row = { id: m.id, name: m.name, body: m.body, ...(m.attached_photo && { attached_photo: m.attached_photo }), ...(m.attached_audio && { attached_audio: m.attached_audio }), ...(m.reply_to && { reply_to: m.reply_to }) };
+    let { error } = await sb().from("chat_messages").insert(row);
+    if (error && row.reply_to && (isMissingColumn(error) || error.code === "42501")) {
+      // Sin la columna reply_to (falta ejecutar todo_en_uno.sql) o con el mensaje citado ya borrado: se envía igualmente, sin la cita.
+      const noColumn = isMissingColumn(error);
+      delete row.reply_to;
+      m.reply_to = null;
+      ({ error } = await sb().from("chat_messages").insert(row));
+      if (!error || error.code === "23505") toast(noColumn ? "Se envió, pero sin la cita: falta ejecutar todo_en_uno.sql en Supabase." : "El mensaje al que respondías ya no existe: se envió sin cita.", 7000);
+    }
     if (error && error.code !== "23505") throw error;
     m._pending = false;
     S.messages.sort((a, b) => a.created_at.localeCompare(b.created_at));
@@ -880,6 +1001,7 @@ async function onClick(event) {
         el.innerHTML = listHtml();
         el.scrollTop = el.scrollHeight - before;
         ensureAttachments();
+        ensureQuotes();
       } catch (err) {
         target.disabled = false;
         toast(err.message || "No se pudieron cargar.");
@@ -888,6 +1010,12 @@ async function onClick(event) {
     }
     case "reload":
       return load();
+    case "reply":
+      return setReply(id);
+    case "reply-cancel":
+      return clearReply();
+    case "goto":
+      return gotoMessage(id);
     case "bubble":
       return; // (la acción «Borrar» se ve siempre en los mensajes propios)
     default:
